@@ -2,26 +2,10 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use std::sync::{Arc, RwLock};
-use std::collections::HashMap;
+use crate::err::ServiceError;
 
-pub trait Service: Send + Sync {}
+pub type CallResult = Result<Vec<u8>, ServiceError>;
 
-#[derive(Clone)]
-pub struct ServiceContainer {
-    services: Arc<RwLock<HashMap<String, Box<dyn Service>>>>
-}
-
-impl ServiceContainer {
-    pub fn new() -> Self {
-        Self {
-            services: Default::default()
-        }
-    }
-
-    pub fn insert(&self, name: String, obj: Box<dyn Service>) {
-        self.services.write()
-            .unwrap()
-            .insert(name, obj);
-    }
+pub trait Service: Send + Sync {
+    fn call(&self, method: &str, arg: &[u8]) -> CallResult;
 }

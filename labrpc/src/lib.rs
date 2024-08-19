@@ -11,5 +11,7 @@ pub mod err;
 
 use tokio::sync::mpsc as tk_mpsc;
 
-type Rx = tk_mpsc::UnboundedReceiver<msg::Msg>;
-type Tx = tk_mpsc::UnboundedSender<msg::Msg>;
+type Rx<T> = tk_mpsc::Receiver<T>;
+type Tx<T> = tk_mpsc::Sender<T>;
+type UbRx<T> = tk_mpsc::UnboundedReceiver<T>;
+type UbTx<T> = tk_mpsc::UnboundedSender<T>;

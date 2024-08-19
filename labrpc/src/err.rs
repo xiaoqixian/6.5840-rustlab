@@ -9,9 +9,19 @@ use tokio::sync::{
     mpsc::error::SendError as MpscSendError
 };
 
+#[derive(Debug, Clone)]
+pub enum ServiceError {
+    ClassNotFound,
+    MethodNotFound,
+    InvalidArgument
+}
+
 #[derive(Debug)]
 pub enum NetworkError {
     NoResponse,
+    Disconnected,
+    PeerNotFound,
+    TimeOut,
     MethError(String),
     ChannelError(String)
 }
@@ -29,7 +39,20 @@ macro_rules! from_channel_err {
             fn from(err: $err_ty) -> Self {
                 Self::NetworkError(
                     NetworkError::ChannelError(
-                        format!("ChannelError: {:?}", err)
+                        format!("ChannelError: {err:?}")
+                    )
+                )
+            }
+        }
+    };
+
+    // with generics
+    ($err_ty: ty, $($generics: ident),+) => {
+        impl<$($generics),+> From<$err_ty> for Error {
+            fn from(err: $err_ty) -> Self {
+                Self::NetworkError(
+                    NetworkError::ChannelError(
+                        format!("ChannelError: {err:?}")
                     )
                 )
             }
@@ -38,13 +61,5 @@ macro_rules! from_channel_err {
 }
 
 from_channel_err!(OneshotRecvError);
+from_channel_err!(MpscSendError<T>, T);
 
-impl<T> From<MpscSendError<T>> for Error {
-    fn from(err: MpscSendError<T>) -> Self {
-        Self::NetworkError(
-            NetworkError::ChannelError(
-                format!("ChannelError: {:?}", err)
-            )
-        )
-    }
-}
