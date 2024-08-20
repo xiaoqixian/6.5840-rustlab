@@ -7,29 +7,16 @@ use std::fmt::Display;
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
-use syn::{parse_macro_input, spanned::Spanned, FnArg, ImplItem, ImplItemFn, ItemImpl, PatType, Receiver, Signature, Type, Visibility};
+use syn::{parse::Parse, parse_macro_input, punctuated::Punctuated, spanned::Spanned, token::PathSep, FnArg, Ident, ImplItem, ImplItemFn, ItemImpl, Path, PathSegment, Receiver, Signature, Type, Visibility};
 
-fn snake_to_upcamel(input: &str) -> String {
-    if input.chars().any(|ch| ch != '_' && !ch.is_ascii_lowercase()) {
-        panic!("snake_to_upcamel: input {input} is not of snake case style");
-    }
-    let mut out = String::new();
-    let mut up_flag = true;
-    for ch in input.chars() {
-        match ch {
-            '_' => up_flag = true,
-            s if up_flag => out.push(s.to_ascii_uppercase()),
-            s => out.push(s)
-        }
-    }
-    out
-}
+mod attr;
+use attr::TraitPath;
 
 fn err<T, M: Display>(span: Span, msg: M) -> Result<T, syn::Error> {
     Err(syn::Error::new(span, msg))
 }
 
-fn good_fn(f: &ImplItemFn) -> Result<PatType, syn::Error> {
+fn good_fn(f: &ImplItemFn) -> Result<(), syn::Error> {
     let ImplItemFn { vis, sig, .. } = f;
     let Signature { inputs, .. } = sig;
 
@@ -63,16 +50,10 @@ fn good_fn(f: &ImplItemFn) -> Result<PatType, syn::Error> {
         )
     }
 
-    let arg_ty = match inputs.next().unwrap() {
-        FnArg::Typed(ty) => ty,
-        FnArg::Receiver(_) => 
-            panic!("no way the second argument is a receiver")
-    };
-
-    Ok(arg_ty.clone())
+    Ok(())
 }
 
-fn rpc_impl(input: ItemImpl) -> Result<TokenStream2, syn::Error> {
+fn rpc_impl(trait_path: Path, input: ItemImpl) -> Result<TokenStream2, syn::Error> {
     let ItemImpl {
         trait_,
         self_ty,
@@ -95,7 +76,7 @@ fn rpc_impl(input: ItemImpl) -> Result<TokenStream2, syn::Error> {
     for item in impl_items {
         match item {
             ImplItem::Fn(f) => {
-                let arg_ty = good_fn(&f)?;
+                good_fn(&f)?;
                 
                 let Signature {
                     ident: fn_ident,
@@ -114,7 +95,7 @@ fn rpc_impl(input: ItemImpl) -> Result<TokenStream2, syn::Error> {
                         let arg = 
                             bincode::deserialize_from(&arg[..]).unwrap();
                         let res = self.#fn_ident(arg)#awaitness;
-                        bincode::serialize(&res).unwrap()
+                        Ok(bincode::serialize(&res).unwrap())
                     }
                 });
             },
@@ -126,11 +107,11 @@ fn rpc_impl(input: ItemImpl) -> Result<TokenStream2, syn::Error> {
     }
 
     let impl_ = quote! {
-        impl #generics Service for #self_ty #generics {
-            async fn call(&self, method: &str, arg: &[u8]) -> Vec<u8> {
+        impl #generics #trait_path for #self_ty #generics {
+            async fn call(&self, method: &str, arg: &[u8]) -> labrpc::CallResult {
                 match method {
                     #(#var_to_call),*
-                    , _ => panic!("")
+                    , _ => Err(labrpc::err::ServiceError::MethodNotFound)
                 }
             }
         }
@@ -143,14 +124,12 @@ fn rpc_impl(input: ItemImpl) -> Result<TokenStream2, syn::Error> {
 }
 
 #[proc_macro_attribute]
-pub fn rpc(_attr: TokenStream, input: TokenStream) -> TokenStream {
+pub fn rpc(attr: TokenStream, input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as ItemImpl);
-    let out = match rpc_impl(input) {
+    let trait_path = parse_macro_input!(attr as TraitPath);
+    let out = match rpc_impl(trait_path.0, input) {
         Ok(t) => t,
         Err(e) => e.to_compile_error()
     };
     TokenStream::from(out)
 }
-
-#[cfg(test)]
-mod test;
