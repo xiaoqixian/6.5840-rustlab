@@ -78,8 +78,19 @@ version = "0.1.0"
 dependencies = [
  "auto-from",
  "bincode",
+ "labrpc-macros",
  "serde",
  "tokio",
+]
+
+[[package]]
+name = "labrpc-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde",
+ "syn",
 ]
 
 [[package]]

@@ -15,3 +15,19 @@ type Rx<T> = tk_mpsc::Receiver<T>;
 type Tx<T> = tk_mpsc::Sender<T>;
 type UbRx<T> = tk_mpsc::UnboundedReceiver<T>;
 type UbTx<T> = tk_mpsc::UnboundedSender<T>;
+
+pub use service::{Service, CallResult};
+
+#[cfg(test)]
+mod tests {
+    use labrpc_macros::rpc;
+
+    struct Hello;
+
+    #[rpc(crate::Service)]
+    impl Hello {
+        pub fn hello(&self, name: String) -> String {
+            format!("Hello, {name}")
+        }
+    }
+}

@@ -11,7 +11,7 @@ use tokio::sync::oneshot::{
     Receiver as OneshotReceiver
 };
 
-use crate::{err::{Error, NetworkError}, msg::{Msg, Pack, ReplyTx, RpcReq}};
+use crate::{err::{Error, NetworkError}, msg::{Msg, Pack, ReplyTx, RpcReq}, CallResult};
 
 use super::{UbTx, UbRx, Rx};
 
@@ -71,7 +71,7 @@ impl Network {
 
 impl NetworkHandle {
     pub fn unicast(&self, to: u32, req: RpcReq) 
-        -> Result<OneshotReceiver<Vec<u8>>, Error> {
+        -> Result<OneshotReceiver<CallResult>, Error> {
         let nodes = self.nodes.read().unwrap();
         let me = nodes.get(&self.id).unwrap();
 
@@ -106,7 +106,7 @@ impl NetworkHandle {
     /// from peer nodes.
     /// And the size of the channel is returned, so the caller can create 
     /// a wrapper channel with the same size.
-    pub fn broadcast(&self, req: RpcReq) -> Result<(usize, Rx<Vec<u8>>), Error> {
+    pub fn broadcast(&self, req: RpcReq) -> Result<(usize, Rx<CallResult>), Error> {
         let nodes = self.nodes.read().unwrap();
         let me = nodes.get(&self.id).unwrap();
 
