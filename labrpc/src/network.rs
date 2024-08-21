@@ -11,9 +11,9 @@ use tokio::sync::oneshot::{
     Receiver as OneshotReceiver
 };
 
-use crate::{err::{Error, NetworkError}, msg::{Msg, Pack, ReplyTx, RpcReq}, CallResult};
+use crate::{err::{Error, NetworkError}, msg::{Pack, ReplyTx, RpcReq}, CallResult};
 
-use super::{UbTx, UbRx, Rx};
+use super::{UbTx, Rx};
 
 type EndTable = Arc<RwLock<HashMap<u32, EndNode>>>;
 
@@ -27,7 +27,7 @@ struct EndNode {
 }
 
 pub struct Network {
-    tx: UbTx<Msg>,
+    // tx: UbTx<Msg>,
     nodes: EndTable
 }
 
@@ -41,17 +41,19 @@ pub struct NetworkHandle {
 
 impl Network {
     pub fn new() -> Self {
-        let (tx, rx) = tk_mpsc::unbounded_channel();
-        tokio::spawn(Self::run(rx));
+        // let (tx, rx) = tk_mpsc::unbounded_channel();
+        // tokio::spawn(Self::run(rx));
         Self {
-            tx,
+            // tx,
             nodes: Default::default()
         }
     }
 
-    async fn run(mut rx: UbRx<Msg>) {
-        while let Some(_msg) = rx.recv().await {}
-    }
+    // async fn run(mut rx: UbRx<Msg>) {
+    //     while let Some(msg) = rx.recv().await {
+    //         
+    //     }
+    // }
 
     pub fn join(&self, node_tx: UbTx<Pack>) -> NetworkHandle {
         let new_node = EndNode {

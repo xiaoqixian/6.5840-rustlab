@@ -41,12 +41,12 @@ mod tests {
         
         assert_eq!(
             Ok("Hello, Jack".to_string()),
-            node2.unicast::<_, String>(1, "Hello.hello", "Jack").await
+            node2.unicast::<_, String>(0, "Hello.hello", "Jack").await
         );
 
         assert_eq!(
             Err(Error::ServiceError(ServiceError::ClassNotFound)),
-            node2.unicast::<_, String>(1, "WTF.hello", "Jack").await
+            node2.unicast::<_, String>(0, "WTF.hello", "Jack").await
         );
 
         assert_eq!(
