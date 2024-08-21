@@ -3,20 +3,41 @@
 // Author: https://github.com/xiaoqixian
 
 use auto_from::auto_throw;
-use bincode::Error as BincodeError;
 use tokio::sync::{
     oneshot::error::RecvError as OneshotRecvError,
     mpsc::error::SendError as MpscSendError
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
+struct BincodeError(bincode::Error);
+impl PartialEq for BincodeError {
+    fn eq(&self, other: &Self) -> bool {
+        use bincode::ErrorKind;
+
+        match (self.0.as_ref(), other.0.as_ref()) {
+            (ErrorKind::Io(_), ErrorKind::Io(_)) => true,
+            (ErrorKind::InvalidUtf8Encoding(_), ErrorKind::InvalidUtf8Encoding(_)) => true,
+            (ErrorKind::InvalidBoolEncoding(_), ErrorKind::InvalidBoolEncoding(_)) => true,
+            (ErrorKind::InvalidCharEncoding, ErrorKind::InvalidCharEncoding) => true,
+            (ErrorKind::InvalidTagEncoding(_), ErrorKind::InvalidTagEncoding(_)) => true,
+            (ErrorKind::DeserializeAnyNotSupported, ErrorKind::DeserializeAnyNotSupported) => true,
+            (ErrorKind::SizeLimit, ErrorKind::SizeLimit) => true,
+            (ErrorKind::SequenceMustHaveLength, ErrorKind::SequenceMustHaveLength) => true,
+            (ErrorKind::Custom(_), ErrorKind::Custom(_)) => true,
+            _ => false
+        }
+    }
+}
+impl Eq for BincodeError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServiceError {
     ClassNotFound,
     MethodNotFound,
     InvalidArgument
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum NetworkError {
     NoResponse,
     Disconnected,
@@ -26,11 +47,12 @@ pub enum NetworkError {
     ChannelError(String)
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 #[auto_throw]
 pub enum Error {
     BincodeError(BincodeError),
-    NetworkError(NetworkError)
+    NetworkError(NetworkError),
+    ServiceError(ServiceError)
 }
 
 macro_rules! from_channel_err {
