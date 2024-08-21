@@ -35,7 +35,7 @@ pub struct Network {
 /// network related operations, i.e., send an unicast/broadcast
 /// RPC request to the network.
 pub struct NetworkHandle {
-    id: u32,
+    pub id: u32,
     nodes: EndTable
 }
 

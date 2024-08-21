@@ -24,12 +24,6 @@ pub struct Pack {
     pub reply_tx: ReplyTx<CallResult>
 }
 
-pub struct Msg {
-    pub from: u32,
-    pub to: u32,
-    pub pack: Pack
-}
-
 impl<T> ReplyTx<T> {
     /// No matter the inner channel is oneshot or multipleshot, 
     /// they are both designed to be oneshot, so the object

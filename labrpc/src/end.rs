@@ -22,6 +22,7 @@ use tokio::sync::RwLock;
 type ServiceContainer = Arc<RwLock<HashMap<String, Box<dyn Service>>>>;
 
 pub struct End {
+    id: u32,
     net: NetworkHandle,
     services: ServiceContainer
 }
@@ -59,8 +60,10 @@ impl End {
             services: services.clone()
         }.run());
 
+        let net = network.join(tx);
         Self {
-            net: network.join(tx),
+            id: net.id,
+            net,
             services
         }
     }
