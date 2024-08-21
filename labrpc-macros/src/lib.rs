@@ -7,7 +7,7 @@ use std::fmt::Display;
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
-use syn::{parse::Parse, parse_macro_input, punctuated::Punctuated, spanned::Spanned, token::PathSep, FnArg, Ident, ImplItem, ImplItemFn, ItemImpl, Path, PathSegment, Receiver, Signature, Type, Visibility};
+use syn::{parse_macro_input, spanned::Spanned, FnArg, ImplItem, ImplItemFn, ItemImpl, Path, Receiver, Signature, Type, Visibility};
 
 mod attr;
 use attr::TraitPath;
@@ -53,7 +53,7 @@ fn good_fn(f: &ImplItemFn) -> Result<(), syn::Error> {
     Ok(())
 }
 
-fn rpc_impl(trait_path: Path, input: ItemImpl) -> Result<TokenStream2, syn::Error> {
+fn rpc_impl(_trait_path: Path, input: ItemImpl) -> Result<TokenStream2, syn::Error> {
     let ItemImpl {
         trait_,
         self_ty,
