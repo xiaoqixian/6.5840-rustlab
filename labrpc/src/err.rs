@@ -9,7 +9,7 @@ use tokio::sync::{
 };
 
 #[derive(Debug)]
-struct BincodeError(bincode::Error);
+pub struct BincodeError(bincode::Error);
 impl PartialEq for BincodeError {
     fn eq(&self, other: &Self) -> bool {
         use bincode::ErrorKind;
@@ -85,3 +85,8 @@ macro_rules! from_channel_err {
 from_channel_err!(OneshotRecvError);
 from_channel_err!(MpscSendError<T>, T);
 
+impl From<bincode::Error> for Error {
+    fn from(value: bincode::Error) -> Self {
+        Self::BincodeError(BincodeError(value))
+    }
+}

@@ -6,6 +6,7 @@ use crate::err::ServiceError;
 
 pub type CallResult = Result<Vec<u8>, ServiceError>;
 
+#[async_trait::async_trait]
 pub trait Service: Send + Sync {
-    fn call(&self, method: &str, arg: &[u8]) -> CallResult;
+    async fn call(&self, method: &str, arg: &[u8]) -> CallResult;
 }

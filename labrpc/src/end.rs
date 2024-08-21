@@ -39,12 +39,12 @@ impl EndServ {
 
             let res = match services.get(&req.cls) {
                 Some(host) => {
-                    host.call(&req.method, &req.arg[..])
+                    host.call(&req.method, &req.arg[..]).await
                 }
                 None => Err(ServiceError::ClassNotFound)
             };
 
-            reply_tx.send(res).await;
+            reply_tx.send(res).await.unwrap();
         }
     }
 }
@@ -63,6 +63,10 @@ impl End {
             net: network.join(tx),
             services
         }
+    }
+
+    pub async fn add_service(&mut self, name: String, service: Box<dyn Service>) {
+        self.services.write().await.insert(name, service);
     }
 
     fn gen_req<A>(meth: &str, arg: A) -> Result<RpcReq, Error> 
@@ -92,12 +96,12 @@ impl End {
         where A: Serialize, R: DeserializeOwned
     {
         let req = Self::gen_req(meth, arg)?;
-        let res = self.net.unicast(to, req)?.await?;
-        let res = bincode::deserialize_from(&res[..])?;
+        let res_enc = self.net.unicast(to, req)?.await??;
+        let res = bincode::deserialize_from(&res_enc[..])?;
         Ok(res)
     }
 
-    pub async fn broadcast<A, R>(&self, meth: &str, arg: A) -> Result<Rx<R>, Error> 
+    pub async fn broadcast<A, R>(&self, meth: &str, arg: A) -> Result<Rx<Result<R, ServiceError>>, Error> 
         where A: Serialize, R: DeserializeOwned + Send + 'static
     {
         let req = Self::gen_req(meth, arg)?;
@@ -105,8 +109,9 @@ impl End {
         let (tx, rx) = tokio::sync::mpsc::channel(len);
         tokio::spawn(async move {
             while let Some(res) = res_rx.recv().await {
-                let res = bincode::deserialize_from(&res[..])
-                    .expect("broadcast: result deserialization error");
+                let res = res.map(|enc| {
+                    bincode::deserialize_from(&enc[..]).unwrap()
+                });
                 tx.send(res).await.unwrap();
             }
         });
