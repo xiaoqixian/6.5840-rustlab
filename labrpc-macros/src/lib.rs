@@ -107,11 +107,12 @@ fn rpc_impl(trait_path: Path, input: ItemImpl) -> Result<TokenStream2, syn::Erro
     }
 
     let impl_ = quote! {
-        impl #generics #trait_path for #self_ty #generics {
-            async fn call(&self, method: &str, arg: &[u8]) -> labrpc::CallResult {
+        #[async_trait::async_trait]
+        impl #generics Service for #self_ty #generics {
+            async fn call(&self, method: &str, arg: &[u8]) -> CallResult {
                 match method {
                     #(#var_to_call),*
-                    , _ => Err(labrpc::err::ServiceError::MethodNotFound)
+                    , _ => Err(ServiceError::MethodNotFound)
                 }
             }
         }
