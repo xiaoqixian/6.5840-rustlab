@@ -2,7 +2,7 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use std::{collections::HashMap, sync::{Arc, RwLock}};
+use std::{collections::HashMap, sync::{atomic::{AtomicBool, Ordering}, Arc, RwLock}};
 use tokio::sync::mpsc::{
     self as tk_mpsc,
 };
@@ -11,7 +11,7 @@ use tokio::sync::oneshot::{
     Receiver as OneshotReceiver
 };
 
-use crate::{err::{Error, NetworkError}, msg::{Pack, ReplyTx, RpcReq}, CallResult};
+use crate::{err::{Error, NetworkError}, msg::{Msg, ReplyTx, RpcReq}, CallResult};
 
 use super::{UbTx, Rx};
 
@@ -22,13 +22,15 @@ type EndTable = Arc<RwLock<HashMap<u32, EndNode>>>;
 /// It contains a Sender to send Pack to the node, 
 /// and some other configuration fields.
 struct EndNode {
-    tx: UbTx<Pack>,
+    tx: UbTx<Msg>,
     connected: bool
 }
 
+#[derive(Clone)]
 pub struct Network {
     // tx: UbTx<Msg>,
-    nodes: EndTable
+    nodes: EndTable,
+    reliable: Arc<AtomicBool>
 }
 
 /// NetworkHandle is for the node to perform some 
@@ -36,7 +38,7 @@ pub struct Network {
 /// RPC request to the network.
 pub struct NetworkHandle {
     pub id: u32,
-    nodes: EndTable
+    net: Network
 }
 
 impl Network {
@@ -45,17 +47,23 @@ impl Network {
         // tokio::spawn(Self::run(rx));
         Self {
             // tx,
-            nodes: Default::default()
+            nodes: Default::default(),
+            reliable: Arc::new(AtomicBool::new(true))
         }
     }
 
-    // async fn run(mut rx: UbRx<Msg>) {
-    //     while let Some(msg) = rx.recv().await {
-    //         
-    //     }
-    // }
+    #[inline]
+    pub fn reliable(self, val: bool) -> Self {
+        self.set_reliable(val);
+        self
+    }
 
-    pub fn join(&self, node_tx: UbTx<Pack>) -> NetworkHandle {
+    #[inline]
+    pub fn set_reliable(&self, val: bool) {
+        self.reliable.store(val, Ordering::Release);
+    }
+
+    pub fn join(&self, node_tx: UbTx<Msg>) -> NetworkHandle {
         let new_node = EndNode {
             tx: node_tx,
             connected: true
@@ -66,7 +74,7 @@ impl Network {
         nodes.insert(id, new_node);
         NetworkHandle {
             id,
-            nodes: self.nodes.clone()
+            net: self.clone()
         }
     }
 }
@@ -74,7 +82,7 @@ impl Network {
 impl NetworkHandle {
     pub fn unicast(&self, to: u32, req: RpcReq) 
         -> Result<OneshotReceiver<CallResult>, Error> {
-        let nodes = self.nodes.read().unwrap();
+        let nodes = self.net.nodes.read().unwrap();
         let me = nodes.get(&self.id).unwrap();
 
         if !me.connected {
@@ -95,12 +103,12 @@ impl NetworkHandle {
         }
 
         let (tx, rx) = tk_oneshot::channel();
-        let pack = Pack {
+        let msg = Msg {
             req,
             reply_tx: ReplyTx::from(tx)
         };
         
-        peer.tx.send(pack)?;
+        peer.tx.send(msg)?;
         Ok(rx)
     }
 
@@ -109,7 +117,7 @@ impl NetworkHandle {
     /// And the size of the channel is returned, so the caller can create 
     /// a wrapper channel with the same size.
     pub fn broadcast(&self, req: RpcReq) -> Result<(usize, Rx<CallResult>), Error> {
-        let nodes = self.nodes.read().unwrap();
+        let nodes = self.net.nodes.read().unwrap();
         let me = nodes.get(&self.id).unwrap();
 
         if !me.connected {
@@ -122,11 +130,11 @@ impl NetworkHandle {
             if id == &self.id || !peer.connected {
                 continue;
             }
-            let pack = Pack {
+            let msg = Msg {
                 req: req.clone(),
                 reply_tx: ReplyTx::from(tx.clone())
             };
-            peer.tx.send(pack)?;
+            peer.tx.send(msg)?;
         }
         Ok((nodes.len()-1, rx))
     }

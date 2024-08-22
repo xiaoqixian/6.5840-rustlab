@@ -24,7 +24,7 @@ mod tests {
 
     struct Hello;
 
-    #[rpc(crate::Service)]
+    #[rpc(Service, CallResult, ServiceError)]
     impl Hello {
         pub fn hello(&self, name: String) -> String {
             format!("Hello, {name}")

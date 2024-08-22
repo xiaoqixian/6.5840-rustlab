@@ -19,7 +19,7 @@ pub struct RpcReq {
     pub arg: Vec<u8>,
 }
 
-pub struct Pack {
+pub struct Msg {
     pub req: RpcReq,
     pub reply_tx: ReplyTx<CallResult>
 }

@@ -6,7 +6,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     err::{NetworkError, ServiceError}, 
-    msg::{Pack, RpcReq}, 
+    msg::{Msg, RpcReq}, 
     network::NetworkHandle, 
     service::Service
 };
@@ -22,20 +22,19 @@ use tokio::sync::RwLock;
 type ServiceContainer = Arc<RwLock<HashMap<String, Box<dyn Service>>>>;
 
 pub struct End {
-    id: u32,
     net: NetworkHandle,
     services: ServiceContainer
 }
 
 struct EndServ {
-    rx: UbRx<Pack>,
+    rx: UbRx<Msg>,
     services: ServiceContainer
 }
 
 impl EndServ {
     async fn run(mut self) {
-        while let Some(pack) = self.rx.recv().await {
-            let Pack { req, reply_tx } = pack;
+        while let Some(msg) = self.rx.recv().await {
+            let Msg { req, reply_tx } = msg;
             let services = self.services.read().await;
 
             let res = match services.get(&req.cls) {
@@ -51,6 +50,11 @@ impl EndServ {
 }
 
 impl End {
+    #[inline]
+    pub fn id(&self) -> u32 {
+        self.net.id
+    }
+
     pub fn new(network: &Network) -> Self {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let services = ServiceContainer::default();
@@ -62,7 +66,6 @@ impl End {
 
         let net = network.join(tx);
         Self {
-            id: net.id,
             net,
             services
         }
