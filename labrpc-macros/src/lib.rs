@@ -7,10 +7,9 @@ use std::fmt::Display;
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
-use syn::{parse_macro_input, spanned::Spanned, FnArg, ImplItem, ImplItemFn, ItemImpl, Path, Receiver, Signature, Type, Visibility};
+use syn::{parse_macro_input, spanned::Spanned, FnArg, ImplItem, ImplItemFn, ItemImpl, Receiver, Signature, Type, Visibility};
 
 mod attr;
-use attr::TraitPath;
 
 fn err<T, M: Display>(span: Span, msg: M) -> Result<T, syn::Error> {
     Err(syn::Error::new(span, msg))
@@ -53,7 +52,7 @@ fn good_fn(f: &ImplItemFn) -> Result<(), syn::Error> {
     Ok(())
 }
 
-fn rpc_impl(_trait_path: Path, input: ItemImpl) -> Result<TokenStream2, syn::Error> {
+fn rpc_impl(attr_paths: attr::AttrPaths, input: ItemImpl) -> Result<TokenStream2, syn::Error> {
     let ItemImpl {
         trait_,
         self_ty,
@@ -106,13 +105,19 @@ fn rpc_impl(_trait_path: Path, input: ItemImpl) -> Result<TokenStream2, syn::Err
         }
     }
 
+    let attr::AttrPaths {
+        trait_path,
+        res_path,
+        err_path
+    } = attr_paths;
+
     let impl_ = quote! {
         #[async_trait::async_trait]
-        impl #generics Service for #self_ty #generics {
-            async fn call(&self, method: &str, arg: &[u8]) -> CallResult {
+        impl #generics #trait_path for #self_ty #generics {
+            async fn call(&self, method: &str, arg: &[u8]) -> #res_path {
                 match method {
                     #(#var_to_call),*
-                    , _ => Err(ServiceError::MethodNotFound)
+                    , _ => Err(#err_path::MethodNotFound)
                 }
             }
         }
@@ -127,8 +132,8 @@ fn rpc_impl(_trait_path: Path, input: ItemImpl) -> Result<TokenStream2, syn::Err
 #[proc_macro_attribute]
 pub fn rpc(attr: TokenStream, input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as ItemImpl);
-    let trait_path = parse_macro_input!(attr as TraitPath);
-    let out = match rpc_impl(trait_path.0, input) {
+    let attr_paths = parse_macro_input!(attr as attr::AttrPaths);
+    let out = match rpc_impl(attr_paths, input) {
         Ok(t) => t,
         Err(e) => e.to_compile_error()
     };
