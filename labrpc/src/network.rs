@@ -80,7 +80,24 @@ impl Network {
 }
 
 impl NetworkHandle {
-    pub fn unicast(&self, to: u32, req: RpcReq) 
+    async fn send(tx: &UbTx<Msg>, msg: Msg, reliable: bool) -> Result<(), Error> {
+        if !reliable {
+            let ms = rand::random::<u64>() % 27;
+            let d = std::time::Duration::from_millis(ms);
+            tokio::time::sleep(d).await;
+
+            // 1/10 possibility of dropping the request, 
+            // return TimeOut error.
+            if (rand::random::<u32>() % 1000) < 100 {
+                return Err(Error::NetworkError(NetworkError::TimeOut));
+            }
+
+        }
+        tx.send(msg)?;
+        Ok(())
+    }
+
+    pub async fn unicast(&self, to: u32, req: RpcReq) 
         -> Result<OneshotReceiver<CallResult>, Error> {
         let nodes = self.net.nodes.read().unwrap();
         let me = nodes.get(&self.id).unwrap();
@@ -107,8 +124,9 @@ impl NetworkHandle {
             req,
             reply_tx: ReplyTx::from(tx)
         };
-        
-        peer.tx.send(msg)?;
+
+        let reliable = self.net.reliable.load(Ordering::Acquire);
+        Self::send(&peer.tx, msg, reliable).await?;
         Ok(rx)
     }
 
@@ -116,7 +134,7 @@ impl NetworkHandle {
     /// from peer nodes.
     /// And the size of the channel is returned, so the caller can create 
     /// a wrapper channel with the same size.
-    pub fn broadcast(&self, req: RpcReq) -> Result<(usize, Rx<CallResult>), Error> {
+    pub async fn broadcast(&self, req: RpcReq) -> Result<(usize, Rx<CallResult>), Error> {
         let nodes = self.net.nodes.read().unwrap();
         let me = nodes.get(&self.id).unwrap();
 
@@ -126,6 +144,7 @@ impl NetworkHandle {
 
         let (tx, rx) = tk_mpsc::channel(nodes.len()-1);
 
+        let reliable = self.net.reliable.load(Ordering::Acquire);
         for (id, peer) in nodes.iter() {
             if id == &self.id || !peer.connected {
                 continue;
@@ -134,7 +153,7 @@ impl NetworkHandle {
                 req: req.clone(),
                 reply_tx: ReplyTx::from(tx.clone())
             };
-            peer.tx.send(msg)?;
+            Self::send(&peer.tx, msg, reliable).await?;
         }
         Ok((nodes.len()-1, rx))
     }

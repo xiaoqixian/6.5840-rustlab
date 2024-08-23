@@ -102,7 +102,8 @@ impl End {
         where A: Serialize, R: DeserializeOwned
     {
         let req = Self::gen_req(meth, arg)?;
-        let res_enc = self.net.unicast(to, req)?.await??;
+        let res_ch = self.net.unicast(to, req).await?;
+        let res_enc = res_ch.await??;
         let res = bincode::deserialize_from(&res_enc[..])?;
         Ok(res)
     }
@@ -111,7 +112,7 @@ impl End {
         where A: Serialize, R: DeserializeOwned + Send + 'static
     {
         let req = Self::gen_req(meth, arg)?;
-        let (len, mut res_rx) = self.net.broadcast(req)?;
+        let (len, mut res_rx) = self.net.broadcast(req).await?;
         let (tx, rx) = tokio::sync::mpsc::channel(len);
         tokio::spawn(async move {
             while let Some(res) = res_rx.recv().await {
