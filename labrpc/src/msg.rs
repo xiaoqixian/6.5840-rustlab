@@ -2,7 +2,7 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use crate::{err::{Error, NetworkError}, service::CallResult};
+use crate::{err::{Error, NetworkError}, service::CallResult, OneTx};
 
 type OneshotSender<T> = tokio::sync::oneshot::Sender<T>;
 type MultishotSender<T> = tokio::sync::mpsc::Sender<T>;
@@ -20,8 +20,10 @@ pub struct RpcReq {
 }
 
 pub struct Msg {
+    pub end_id: u32,
     pub req: RpcReq,
-    pub reply_tx: ReplyTx<CallResult>
+    // pub reply_tx: ReplyTx<CallResult>
+    pub reply_tx: OneTx<CallResult>
 }
 
 impl<T> ReplyTx<T> {

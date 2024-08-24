@@ -2,53 +2,80 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use std::{collections::HashMap, sync::{atomic::{AtomicBool, Ordering}, Arc, RwLock}};
-use tokio::sync::mpsc::{
-    self as tk_mpsc,
-};
-use tokio::sync::oneshot::{
-    self as tk_oneshot,
-    Receiver as OneshotReceiver
+use std::{collections::HashMap, sync::{atomic::{AtomicBool, Ordering}, Arc}};
+use tokio::sync::{mpsc as tk_mpsc, RwLock};
+
+use crate::{
+    end::{Client, Server}, err::TIMEOUT, msg::{Msg, RpcReq}, CallResult, UbRx
 };
 
-use crate::{err::{Error, NetworkError}, msg::{Msg, ReplyTx, RpcReq}, CallResult};
-
-use super::{UbTx, Rx};
+use super::UbTx;
 
 type EndTable = Arc<RwLock<HashMap<u32, EndNode>>>;
 
-/// EndNode is a channel for the network center to deliver
-/// RPC request to the corresponding node.
-/// It contains a Sender to send Pack to the node, 
-/// and some other configuration fields.
-struct EndNode {
-    tx: UbTx<Msg>,
-    connected: bool
+#[derive(Clone)]
+struct NetworkConfig {
+    reliable: Arc<AtomicBool>,
+    long_delay: Arc<AtomicBool>
 }
 
 #[derive(Clone)]
 pub struct Network {
-    // tx: UbTx<Msg>,
+    tx: UbTx<Msg>,
     nodes: EndTable,
-    reliable: Arc<AtomicBool>
+    config: NetworkConfig
 }
 
-/// NetworkHandle is for the node to perform some 
-/// network related operations, i.e., send an unicast/broadcast
-/// RPC request to the network.
-pub struct NetworkHandle {
-    pub id: u32,
-    net: Network
+#[derive(Clone)]
+struct NetworkDaemon {
+    nodes: EndTable,
+    config: NetworkConfig
+}
+
+struct EndNode {
+    server: Server,
+    connected: Arc<AtomicBool>
+}
+
+impl EndNode {
+    #[inline]
+    fn connected(&self) -> bool {
+        self.connected.load(Ordering::Acquire)
+    }
+}
+
+impl NetworkConfig {
+    #[inline]
+    fn reliable(&self) -> bool {
+        self.reliable.load(Ordering::Acquire)
+    }
+
+    #[inline]
+    fn long_delay(&self) -> bool {
+        self.long_delay.load(Ordering::Acquire)
+    }
 }
 
 impl Network {
     pub fn new() -> Self {
-        // let (tx, rx) = tk_mpsc::unbounded_channel();
-        // tokio::spawn(Self::run(rx));
+        let config = NetworkConfig {
+            reliable: Arc::new(AtomicBool::new(true)),
+            long_delay: Default::default()
+        };
+
+        let (tx, rx) = tk_mpsc::unbounded_channel();
+
+        let nodes: EndTable = Default::default();
+
+        tokio::spawn(NetworkDaemon {
+            nodes: nodes.clone(),
+            config: config.clone()
+        }.run(rx));
+
         Self {
-            // tx,
-            nodes: Default::default(),
-            reliable: Arc::new(AtomicBool::new(true))
+            tx,
+            nodes,
+            config
         }
     }
 
@@ -60,101 +87,78 @@ impl Network {
 
     #[inline]
     pub fn set_reliable(&self, val: bool) {
-        self.reliable.store(val, Ordering::Release);
+        self.config.reliable.store(val, Ordering::Release);
     }
 
-    pub fn join(&self, node_tx: UbTx<Msg>) -> NetworkHandle {
-        let new_node = EndNode {
-            tx: node_tx,
-            connected: true
-        };
-        let mut nodes = self.nodes.write().unwrap();
+    pub async fn join(&self, server: Server) -> (u32, UbTx<Msg>) {
+        let mut nodes = self.nodes.write().await;
         let id = nodes.len() as u32;
-        
-        nodes.insert(id, new_node);
-        NetworkHandle {
-            id,
-            net: self.clone()
-        }
+        nodes.insert(id, EndNode {
+            server,
+            connected: Arc::new(AtomicBool::new(true))
+        });
+        (id, self.tx.clone())
+    }
+
+    pub async fn make_clients(&self) -> Vec<Client> {
+        let nodes = self.nodes.read().await;
+        nodes.keys()
+            .map(|id| Client::new(*id, self.tx.clone()))
+            .collect::<Vec<_>>()
     }
 }
 
-impl NetworkHandle {
-    async fn send(tx: &UbTx<Msg>, msg: Msg, reliable: bool) -> Result<(), Error> {
-        if !reliable {
-            let ms = rand::random::<u64>() % 27;
+impl NetworkDaemon {
+    async fn run(self, mut rx: UbRx<Msg>) {
+        while let Some(msg) = rx.recv().await {
+            tokio::spawn(self.clone().process_msg(msg));
+        }
+    }
+
+    async fn process_msg(self, msg: Msg) {
+        let Msg {
+            end_id,
+            req,
+            reply_tx
+        } = msg;
+        let result = self.dispatch(end_id, req).await;
+        reply_tx.send(result).await.unwrap()
+    }
+
+    async fn dispatch(&self, end_id: u32, req: RpcReq) -> CallResult {
+        let nodes = self.nodes.read().await;
+
+        let node = match nodes.get(&end_id) {
+            Some(node) if node.connected() => Some(node),
+            _ => None
+        };
+
+        if let Some(node) = node {
+            let reliable = self.config.reliable();
+            if !reliable {
+                // give a random short delay.
+                let ms = rand::random::<u64>() % 27;
+                let d = std::time::Duration::from_millis(ms);
+                tokio::time::sleep(d).await;
+            }
+
+            if !reliable && rand::random::<u32>() % 1000 < 100 {
+                Err(TIMEOUT)
+            } else {
+                node.server.dispatch(req).await
+            }
+        } else {
+            // simulate no reply and eventual timeout
+            let ms = rand::random::<u64>();
+            let ms = if self.config.long_delay() {
+                ms % 7000
+            } else {
+                ms % 100
+            };
+
             let d = std::time::Duration::from_millis(ms);
             tokio::time::sleep(d).await;
-
-            // 1/10 possibility of dropping the request, 
-            // return TimeOut error.
-            if (rand::random::<u32>() % 1000) < 100 {
-                return Err(Error::NetworkError(NetworkError::TimeOut));
-            }
-
+            Err(TIMEOUT)
         }
-        tx.send(msg)?;
-        Ok(())
-    }
-
-    pub async fn unicast(&self, to: u32, req: RpcReq) 
-        -> Result<OneshotReceiver<CallResult>, Error> {
-        let nodes = self.net.nodes.read().unwrap();
-        let me = nodes.get(&self.id).unwrap();
-
-        if !me.connected {
-            return Err(Error::NetworkError(NetworkError::Disconnected));
-        }
-
-        let peer = match nodes.get(&to) {
-            None => return Err(Error::NetworkError(
-                // TODO: add some delay
-                NetworkError::PeerNotFound
-            )),
-            Some(peer) => peer
-        };
-
-        if !peer.connected {
-            // TODO: add some delay
-            return Err(Error::NetworkError(NetworkError::TimeOut));
-        }
-
-        let (tx, rx) = tk_oneshot::channel();
-        let msg = Msg {
-            req,
-            reply_tx: ReplyTx::from(tx)
-        };
-
-        let reliable = self.net.reliable.load(Ordering::Acquire);
-        Self::send(&peer.tx, msg, reliable).await?;
-        Ok(rx)
-    }
-
-    /// If ok, return a async channel receiver to receive incoming results 
-    /// from peer nodes.
-    /// And the size of the channel is returned, so the caller can create 
-    /// a wrapper channel with the same size.
-    pub async fn broadcast(&self, req: RpcReq) -> Result<(usize, Rx<CallResult>), Error> {
-        let nodes = self.net.nodes.read().unwrap();
-        let me = nodes.get(&self.id).unwrap();
-
-        if !me.connected {
-            return Err(Error::NetworkError(NetworkError::Disconnected));
-        }
-
-        let (tx, rx) = tk_mpsc::channel(nodes.len()-1);
-
-        let reliable = self.net.reliable.load(Ordering::Acquire);
-        for (id, peer) in nodes.iter() {
-            if id == &self.id || !peer.connected {
-                continue;
-            }
-            let msg = Msg {
-                req: req.clone(),
-                reply_tx: ReplyTx::from(tx.clone())
-            };
-            Self::send(&peer.tx, msg, reliable).await?;
-        }
-        Ok((nodes.len()-1, rx))
     }
 }

@@ -4,7 +4,7 @@
 
 use crate::err::ServiceError;
 
-pub type CallResult = Result<Vec<u8>, ServiceError>;
+pub type CallResult = Result<Vec<u8>, Error>;
 
 #[async_trait::async_trait]
 pub trait Service: Send + Sync {

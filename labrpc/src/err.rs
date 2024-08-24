@@ -8,6 +8,13 @@ use tokio::sync::{
     mpsc::error::SendError as MpscSendError
 };
 
+pub const DISCONNECTED: Error = Error::NetworkError(NetworkError::Disconnected);
+pub const NO_RESPONSE: Error=  Error::NetworkError(NetworkError::NoResponse);
+pub const TIMEOUT: Error=  Error::NetworkError(NetworkError::TimeOut);
+
+pub const CLASS_NOT_FOUND: Error = Error::ServiceError(ServiceError::ClassNotFound);
+pub const METHOD_NOT_FOUND: Error = Error::ServiceError(ServiceError::MethodNotFound);
+
 #[derive(Debug)]
 pub struct BincodeError(bincode::Error);
 impl PartialEq for BincodeError {
