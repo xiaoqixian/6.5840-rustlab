@@ -15,7 +15,7 @@ fn err<T, M: Display>(span: Span, msg: M) -> Result<T, syn::Error> {
     Err(syn::Error::new(span, msg))
 }
 
-fn good_fn(f: &ImplItemFn) -> Result<(), syn::Error> {
+fn good_fn(f: &ImplItemFn) -> Result<Box<Type>, syn::Error> {
     let ImplItemFn { vis, sig, .. } = f;
     let Signature { inputs, .. } = sig;
 
@@ -49,7 +49,14 @@ fn good_fn(f: &ImplItemFn) -> Result<(), syn::Error> {
         )
     }
 
-    Ok(())
+    let arg = inputs.next().unwrap();
+    match arg {
+        FnArg::Typed(pat_type) => Ok(pat_type.ty.clone()),
+        _ => err(
+            arg.span(),
+            "Are you kidding me?"
+        )
+    }
 }
 
 fn rpc_impl(attr_paths: attr::AttrPaths, input: ItemImpl) -> Result<TokenStream2, syn::Error> {
@@ -60,6 +67,12 @@ fn rpc_impl(attr_paths: attr::AttrPaths, input: ItemImpl) -> Result<TokenStream2
         generics,
         ..
     } = input.clone();
+
+    let attr::AttrPaths {
+        trait_path,
+        res_path,
+        err_path
+    } = attr_paths;
 
     if let Some((_, path, _)) = trait_ {
         return err(path.span(), "trait impl is not allowed");
@@ -75,7 +88,7 @@ fn rpc_impl(attr_paths: attr::AttrPaths, input: ItemImpl) -> Result<TokenStream2
     for item in impl_items {
         match item {
             ImplItem::Fn(f) => {
-                good_fn(&f)?;
+                let arg_ty = good_fn(&f)?;
                 
                 let Signature {
                     ident: fn_ident,
@@ -91,8 +104,10 @@ fn rpc_impl(attr_paths: attr::AttrPaths, input: ItemImpl) -> Result<TokenStream2
 
                 var_to_call.push(quote! {
                     #fn_ident_str => {
-                        let arg = 
-                            bincode::deserialize_from(&arg[..]).unwrap();
+                        let arg: #arg_ty = match bincode::deserialize_from(&arg[..]) {
+                            Err(_) => return Err(#err_path::InvalidArgument),
+                            Ok(arg) => arg
+                        };
                         let res = self.#fn_ident(arg)#awaitness;
                         Ok(bincode::serialize(&res).unwrap())
                     }
@@ -104,12 +119,6 @@ fn rpc_impl(attr_paths: attr::AttrPaths, input: ItemImpl) -> Result<TokenStream2
             )
         }
     }
-
-    let attr::AttrPaths {
-        trait_path,
-        res_path,
-        err_path
-    } = attr_paths;
 
     let impl_ = quote! {
         #[async_trait::async_trait]
