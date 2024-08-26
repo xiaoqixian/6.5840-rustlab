@@ -21,7 +21,7 @@ pub use service::{Service, CallResult};
 #[cfg(test)]
 mod tests {
     use labrpc_macros::rpc;
-    use crate::{end::End, err::{Error, ServiceError}, CallResult, Service};
+    use crate::{Service, service::CallResult, err::ServiceError};
 
     struct Hello;
 
@@ -35,14 +35,34 @@ mod tests {
     #[tokio::test]
     async fn network_test() {
         let network = crate::network::Network::new();
-        let mut nodes = Vec::with_capacity(5);
+        // let mut servers = Vec::<crate::end::Admin>::new();
         for _ in 0..5 {
-            let mut node = End::new(&network).await;
-            node.add_service("Hello".to_string(), Box::new(Hello)).await;
-            nodes.push(node);
+            let mut admin = crate::end::Admin::new();
+            admin.add_service("Hello".to_string(), Box::new(Hello)).await;
+            admin.join(&network).await;
+            // servers.push(admin);
         }
 
+        let client0 = network.make_client_for(0).await;
         
+        assert_eq!(
+            Ok("Hello, Lunar".to_string()),
+            client0.unicast::<_, String>(0, "Hello.hello", "Lunar".to_string()).await
+        );
+
+        assert_eq!(
+            Err(crate::err::PEER_NOT_FOUND),
+            client0.unicast::<_, String>(5, "Hello.hello", "Lunar".to_string()).await
+        );
+
+        assert_eq!(
+            Err(crate::err::CLASS_NOT_FOUND),
+            client0.unicast::<_, String>(0, "WTF.hello", "Lunar".to_string()).await
+        );
+        assert_eq!(
+            Err(crate::err::METHOD_NOT_FOUND),
+            client0.unicast::<_, String>(0, "Hello.wtf", "Lunar".to_string()).await
+        );
     }
 
 }

@@ -6,7 +6,7 @@ use std::{collections::HashMap, sync::{atomic::{AtomicBool, Ordering}, Arc}};
 use tokio::sync::{mpsc as tk_mpsc, RwLock};
 
 use crate::{
-    end::{Client, Server}, err::TIMEOUT, msg::{Msg, RpcReq}, CallResult, UbRx
+    end::{Client, ClientEnd, Server}, err::TIMEOUT, msg::{Msg, RpcReq}, CallResult, UbRx
 };
 
 use super::UbTx;
@@ -100,10 +100,25 @@ impl Network {
         (id, self.tx.clone())
     }
 
+    pub async fn make_client_for(&self, me: u32) -> Client {
+        let nodes = self.nodes.read().await;
+        Client::new(nodes.keys().cloned()
+            .filter(|id| *id != me)
+            .map(|id| (id, ClientEnd::new(id, self.tx.clone())))
+            .collect::<HashMap<_, _>>())
+    }
+
     pub async fn make_clients(&self) -> Vec<Client> {
         let nodes = self.nodes.read().await;
-        nodes.keys()
-            .map(|id| Client::new(*id, self.tx.clone()))
+        let make_for = |me: u32| {
+            Client::new(nodes.keys().cloned()
+                .filter(|id| *id != me)
+                .map(|id| (id, ClientEnd::new(id, self.tx.clone())))
+                .collect::<HashMap<_, _>>())
+        };
+        
+        nodes.keys().cloned()
+            .map(make_for)
             .collect::<Vec<_>>()
     }
 }

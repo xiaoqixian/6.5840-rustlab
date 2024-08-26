@@ -141,6 +141,8 @@ dependencies = [
 name = "labrpc-macros"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "bincode",
  "proc-macro2",
  "quote",
  "serde",

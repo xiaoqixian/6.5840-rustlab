@@ -8,6 +8,7 @@ use tokio::sync::{
     mpsc::error::SendError as MpscSendError
 };
 
+pub const PEER_NOT_FOUND: Error = Error::NetworkError(NetworkError::PeerNotFound);
 pub const DISCONNECTED: Error = Error::NetworkError(NetworkError::Disconnected);
 pub const NO_RESPONSE: Error=  Error::NetworkError(NetworkError::NoResponse);
 pub const TIMEOUT: Error=  Error::NetworkError(NetworkError::TimeOut);
