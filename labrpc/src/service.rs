@@ -2,7 +2,7 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use crate::err::ServiceError;
+use crate::err::Error;
 
 pub type CallResult = Result<Vec<u8>, Error>;
 

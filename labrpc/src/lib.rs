@@ -21,11 +21,11 @@ pub use service::{Service, CallResult};
 #[cfg(test)]
 mod tests {
     use labrpc_macros::rpc;
-    use crate::{Service, service::CallResult, err::ServiceError};
+    use crate::{Service, service::CallResult, err};
 
     struct Hello;
 
-    #[rpc(Service, CallResult, ServiceError)]
+    #[rpc(Service, CallResult, err)]
     impl Hello {
         pub fn hello(&self, name: String) -> String {
             format!("Hello, {name}")
@@ -62,6 +62,10 @@ mod tests {
         assert_eq!(
             Err(crate::err::METHOD_NOT_FOUND),
             client0.unicast::<_, String>(0, "Hello.wtf", "Lunar".to_string()).await
+        );
+        assert_eq!(
+            Err(crate::err::INVALID_ARGUMENT),
+            client0.unicast::<_, String>(0, "Hello.hello", 12).await
         );
     }
 

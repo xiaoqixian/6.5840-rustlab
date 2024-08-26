@@ -15,6 +15,7 @@ pub const TIMEOUT: Error=  Error::NetworkError(NetworkError::TimeOut);
 
 pub const CLASS_NOT_FOUND: Error = Error::ServiceError(ServiceError::ClassNotFound);
 pub const METHOD_NOT_FOUND: Error = Error::ServiceError(ServiceError::MethodNotFound);
+pub const INVALID_ARGUMENT: Error = Error::ServiceError(ServiceError::InvalidArgument);
 
 #[derive(Debug)]
 pub struct BincodeError(bincode::Error);

@@ -137,7 +137,7 @@ impl NetworkDaemon {
             reply_tx
         } = msg;
         let result = self.dispatch(end_id, req).await;
-        reply_tx.send(result).await.unwrap()
+        reply_tx.send(result).unwrap()
     }
 
     async fn dispatch(&self, end_id: u32, req: RpcReq) -> CallResult {
