@@ -29,7 +29,7 @@ fn good_fn(f: &ImplItemFn) -> Result<Box<Type>, syn::Error> {
     
     if inputs.len() != 2 {
         return err(
-            sig.span(),
+            inputs.span(),
             "The function arguments size is expected to be 2"
         );
     }
@@ -105,7 +105,7 @@ fn rpc_impl(attr_paths: attr::AttrPaths, input: ItemImpl) -> Result<TokenStream2
                 var_to_call.push(quote! {
                     #fn_ident_str => {
                         let arg: #arg_ty = match bincode::deserialize_from(&arg[..]) {
-                            Err(_) => return Err(#err_path::InvalidArgument),
+                            Err(_) => return Err(#err_path::INVALID_ARGUMENT),
                             Ok(arg) => arg
                         };
                         let res = self.#fn_ident(arg)#awaitness;
@@ -126,7 +126,7 @@ fn rpc_impl(attr_paths: attr::AttrPaths, input: ItemImpl) -> Result<TokenStream2
             async fn call(&self, method: &str, arg: &[u8]) -> #res_path {
                 match method {
                     #(#var_to_call),*
-                    , _ => Err(#err_path::MethodNotFound)
+                    , _ => Err(#err_path::METHOD_NOT_FOUND)
                 }
             }
         }
