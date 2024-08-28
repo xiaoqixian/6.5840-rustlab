@@ -47,9 +47,16 @@ mod tests {
         
         assert_eq!(
             Ok("Hello, Lunar".to_string()),
-            client0.unicast::<_, String>(0, "Hello.hello", "Lunar".to_string()).await
+            client0.unicast::<_, String>(1, "Hello.hello", "Lunar".to_string()).await
         );
 
+        // send to myself should return PEER_NOT_FOUND error
+        assert_eq!(
+            Err(crate::err::PEER_NOT_FOUND),
+            client0.unicast::<_, String>(5, "Hello.hello", "Lunar".to_string()).await
+        );
+
+        // send to a non-exist node should return PEER_NOT_FOUND error
         assert_eq!(
             Err(crate::err::PEER_NOT_FOUND),
             client0.unicast::<_, String>(5, "Hello.hello", "Lunar".to_string()).await
@@ -57,15 +64,25 @@ mod tests {
 
         assert_eq!(
             Err(crate::err::CLASS_NOT_FOUND),
-            client0.unicast::<_, String>(0, "WTF.hello", "Lunar".to_string()).await
+            client0.unicast::<_, String>(1, "WTF.hello", "Lunar".to_string()).await
         );
         assert_eq!(
             Err(crate::err::METHOD_NOT_FOUND),
-            client0.unicast::<_, String>(0, "Hello.wtf", "Lunar".to_string()).await
+            client0.unicast::<_, String>(1, "Hello.wtf", "Lunar".to_string()).await
         );
         assert_eq!(
             Err(crate::err::INVALID_ARGUMENT),
-            client0.unicast::<_, String>(0, "Hello.hello", 12).await
+            client0.unicast::<_, String>(1, "Hello.hello", 12).await
+        );
+
+        let mut rx = client0.broadcast::<_, String>(
+            "Hello.hello", "Lunar".to_string()).await.unwrap();
+        let mut rets = Vec::new();
+        let get = rx.recv_many(&mut rets, 4).await;
+        assert_eq!(get, 4);
+        assert!(
+            rets.into_iter()
+            .all(|r| r == Ok("Hello, Lunar".to_string()))
         );
     }
 
