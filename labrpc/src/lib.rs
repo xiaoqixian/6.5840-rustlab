@@ -5,9 +5,10 @@
 
 pub mod network;
 pub mod msg;
-pub mod end;
 pub mod service;
 pub mod err;
+pub mod client;
+pub mod server;
 
 use tokio::sync::mpsc as tk_mpsc;
 
@@ -34,17 +35,17 @@ mod tests {
 
     #[tokio::test]
     async fn network_test() {
-        let network = crate::network::Network::new();
-        // let mut servers = Vec::<crate::end::Admin>::new();
+        let mut network = crate::network::Network::new();
+
+        let mut clients = Vec::with_capacity(5);
         for _ in 0..5 {
-            let mut admin = crate::end::Admin::new();
-            admin.add_service("Hello".to_string(), Box::new(Hello)).await;
-            admin.join(&network).await;
-            // servers.push(admin);
+            let mut c = network.join_one().await;
+            c.add_service("Hello".to_string(), Box::new(Hello)).await;
+            clients.push(c);
         }
 
-        let client0 = network.make_client_for(0).await;
-        
+        let client0 = &clients[0];
+
         assert_eq!(
             Ok("Hello, Lunar".to_string()),
             client0.unicast::<_, String>(1, "Hello.hello", "Lunar".to_string()).await
@@ -82,7 +83,7 @@ mod tests {
         assert_eq!(get, 4);
         assert!(
             rets.into_iter()
-            .all(|r| r == Ok("Hello, Lunar".to_string()))
+                .all(|r| r == Ok("Hello, Lunar".to_string()))
         );
     }
 

@@ -6,12 +6,19 @@ use std::{collections::HashMap, sync::{atomic::{AtomicBool, Ordering}, Arc}};
 use tokio::sync::{mpsc as tk_mpsc, RwLock};
 
 use crate::{
-    end::{Client, ClientEnd, Server}, err::TIMEOUT, msg::{Msg, RpcReq}, CallResult, UbRx
+    err::TIMEOUT, 
+    msg::{Msg, RpcReq}, 
+    Service, CallResult, UbRx,
+    client::{Client, ClientEnd},
+    server::Server
 };
 
 use super::UbTx;
 
-type EndTable = Arc<RwLock<HashMap<u32, EndNode>>>;
+pub type Peers = Arc<RwLock<HashMap<u32, ClientEnd>>>;
+pub type ServiceContainer = Arc<RwLock<HashMap<String, Box<dyn Service>>>>;
+
+type ServerTable = Arc<RwLock<HashMap<u32, ServerNode>>>;
 
 #[derive(Clone)]
 struct NetworkConfig {
@@ -22,22 +29,23 @@ struct NetworkConfig {
 #[derive(Clone)]
 pub struct Network {
     tx: UbTx<Msg>,
-    nodes: EndTable,
-    config: NetworkConfig
+    config: NetworkConfig,
+    nodes: ServerTable,
+    peers: Peers
 }
 
 #[derive(Clone)]
 struct NetworkDaemon {
-    nodes: EndTable,
+    nodes: ServerTable,
     config: NetworkConfig
 }
 
-struct EndNode {
+struct ServerNode {
     server: Server,
     connected: Arc<AtomicBool>
 }
 
-impl EndNode {
+impl ServerNode {
     #[inline]
     fn connected(&self) -> bool {
         self.connected.load(Ordering::Acquire)
@@ -65,7 +73,7 @@ impl Network {
 
         let (tx, rx) = tk_mpsc::unbounded_channel();
 
-        let nodes: EndTable = Default::default();
+        let nodes = ServerTable::default();
 
         tokio::spawn(NetworkDaemon {
             nodes: nodes.clone(),
@@ -74,8 +82,9 @@ impl Network {
 
         Self {
             tx,
+            config,
             nodes,
-            config
+            peers: Default::default()
         }
     }
 
@@ -90,36 +99,20 @@ impl Network {
         self.config.reliable.store(val, Ordering::Release);
     }
 
-    pub async fn join(&self, server: Server) -> (u32, UbTx<Msg>) {
+    pub async fn join_one(&mut self) -> Client {
+        let services = ServiceContainer::default();
+
         let mut nodes = self.nodes.write().await;
         let id = nodes.len() as u32;
-        nodes.insert(id, EndNode {
-            server,
+        nodes.insert(id, ServerNode {
+            server: Server::new(services.clone()),
             connected: Arc::new(AtomicBool::new(true))
         });
-        (id, self.tx.clone())
-    }
-
-    pub async fn make_client_for(&self, me: u32) -> Client {
-        let nodes = self.nodes.read().await;
-        Client::new(nodes.keys().cloned()
-            .filter(|id| *id != me)
-            .map(|id| (id, ClientEnd::new(id, self.tx.clone())))
-            .collect::<HashMap<_, _>>())
-    }
-
-    pub async fn make_clients(&self) -> Vec<Client> {
-        let nodes = self.nodes.read().await;
-        let make_for = |me: u32| {
-            Client::new(nodes.keys().cloned()
-                .filter(|id| *id != me)
-                .map(|id| (id, ClientEnd::new(id, self.tx.clone())))
-                .collect::<HashMap<_, _>>())
-        };
         
-        nodes.keys().cloned()
-            .map(make_for)
-            .collect::<Vec<_>>()
+        let mut peers = self.peers.write().await;
+        peers.insert(id, ClientEnd::new(id, self.tx.clone()));
+        
+        Client::new(id, self.peers.clone(), services)
     }
 }
 
