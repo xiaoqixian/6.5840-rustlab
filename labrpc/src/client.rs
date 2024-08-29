@@ -16,7 +16,7 @@ use serde::{Serialize, de::DeserializeOwned};
 /// it can start a RPC request to the corresponding 
 /// RPC server.
 #[derive(Clone)]
-pub struct ClientEnd {
+pub(crate) struct ClientEnd {
     id: u32,
     net_tx: UbTx<Msg>
 }
@@ -77,7 +77,7 @@ impl ClientEnd {
 }
 
 impl Client {
-    pub fn new(id: u32, peers: Peers, services: ServiceContainer) -> Self {
+    pub(crate) fn new(id: u32, peers: Peers, services: ServiceContainer) -> Self {
         Self { id, peers, services }
     }
 

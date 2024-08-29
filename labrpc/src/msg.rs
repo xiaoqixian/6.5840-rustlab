@@ -5,13 +5,13 @@
 use crate::{service::CallResult, OneTx};
 
 #[derive(Clone)]
-pub struct RpcReq {
+pub(crate) struct RpcReq {
     pub cls: String,
     pub method: String,
     pub arg: Vec<u8>,
 }
 
-pub struct Msg {
+pub(crate) struct Msg {
     pub end_id: u32,
     pub req: RpcReq,
     pub reply_tx: OneTx<CallResult>

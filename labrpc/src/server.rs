@@ -14,7 +14,7 @@ use crate::{
 /// On receiving a RPC request, the network center checks its 
 /// target server id, then dispatch it to the corresponding server.
 #[derive(Default)]
-pub struct Server {
+pub(crate) struct Server {
     services: ServiceContainer
 }
 

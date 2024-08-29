@@ -15,8 +15,8 @@ use crate::{
 
 use super::UbTx;
 
-pub type Peers = Arc<RwLock<HashMap<u32, ClientEnd>>>;
-pub type ServiceContainer = Arc<RwLock<HashMap<String, Box<dyn Service>>>>;
+pub(crate) type Peers = Arc<RwLock<HashMap<u32, ClientEnd>>>;
+pub(crate) type ServiceContainer = Arc<RwLock<HashMap<String, Box<dyn Service>>>>;
 
 type ServerTable = Arc<RwLock<HashMap<u32, ServerNode>>>;
 
