@@ -3,14 +3,14 @@
 // Author: https://github.com/xiaoqixian
 
 pub struct Command {
-    index: usize,
-    command: Vec<u8>
+    pub index: usize,
+    pub command: Vec<u8>
 }
 
 pub struct Snapshot {
-    term: usize,
-    index: usize,
-    snapshot: Vec<u8>
+    pub term: usize,
+    pub index: usize,
+    pub snapshot: Vec<u8>
 }
 
 pub enum ApplyMsg {
