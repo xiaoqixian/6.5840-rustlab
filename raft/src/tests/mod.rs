@@ -5,23 +5,25 @@
 #[cfg(test)]
 mod test_3a;
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, ops::DerefMut, sync::Arc};
 
 use labrpc::network::Network;
-use tokio::sync::Mutex;
-use crate::{msg::{ApplyMsg, Command}, Rx};
+use tokio::sync::{Mutex, RwLock};
+use crate::{msg::{ApplyMsg, Command}, persist::Persister, raft::Raft, Rx};
+
+struct Node {
+    last_applied: usize,
+    persister: Persister,
+    raft: Option<Raft>,
+    connected: bool
+}
 
 struct Config {
     n: usize,
     net: Network,
     bytes: usize,
-    last_applied: Vec<usize>,
-    // logs[i] represent log entries applied by node i,
-    // logs[i][j] represent the command value, 
-    // we use u32 to represent a command in tests.
-    logs: Arc<Vec<Vec<u32>>>,
-    lock: Arc<Mutex<()>>,
-    max_cmd_indx: usize,
+    nodes: Vec<Node>,
+    logs: Arc<Mutex<Logs>>,
 }
 
 struct Logs {
@@ -35,22 +37,130 @@ struct Applier {
     apply_ch: Rx<ApplyMsg>
 }
 
-impl Config {
-    // pub async fn new(n: usize, unreliable: bool, snapshot: bool) -> Self {
-    //     let net = Network::new();
-    // }
+struct Tester(Arc<RwLock<Config>>);
 
-    async fn start1()
+impl Tester {
+    pub async fn new(n: usize, reliable: bool, snapshot: bool) -> Self {
+        let config = Config {
+            n,
+            bytes: 0,
+            net: Network::new().reliable(reliable).long_delay(true),
+            logs: Arc::new(Mutex::new(Logs {
+                logs: vec![Vec::new(); n],
+                max_cmd_indx: 0
+            })),
+            nodes: (0..n).into_iter()
+                .map(|_| Node {
+                    last_applied: 0,
+                    persister: Persister::default(),
+                    raft: None,
+                    connected: true
+                })
+                .collect()
+        };
+        
+        let tester = Self(Arc::new(RwLock::new(config)));
+        for i in 0..n as u32 {
+            tester.start1(i, snapshot).await;
+        }
+        tester
+    }
+
+    async fn start1(&self, id: u32, snapshot: bool) {
+        self.crash1(id).await;
+
+        let mut config = self.0.write().await;
+        let Config {
+            net,
+            nodes,
+            ..
+        } = config.deref_mut();
+        let node = &mut nodes[id as usize];
+
+        if let Some(snapshot) = node.persister.snapshot().await {
+            self.ingest_snapshot(id, snapshot, None).await;
+        }
+
+        let client = net.join_one().await;
+        let persister = node.persister.clone().await;
+
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let raft = Raft::new(client, id, Some(persister), tx);
+        
+        node.raft = Some(raft);
+        
+        tokio::spawn(Applier {
+            id,
+            logs: config.logs.clone(),
+            apply_ch: rx
+        }.run(snapshot));
+    }
+
+    async fn crash1(&self, id: u32) {
+        let raft_node = {
+            let mut config = self.0.write().await;
+            let node = &mut config.nodes[id as usize];
+
+            // as this Persister is hold by the old raft node as well,
+            // we need to create a new one so the old one won't affect 
+            // this one.
+            node.persister = node.persister.clone().await;
+            node.raft.take()
+        };
+        if let Some(raft_node) = raft_node {
+            raft_node.kill().await;
+        }
+    }
+
+    /// Check if only one leader exist for a specific term, 
+    /// panics when there are multiple leaders with the same term.
+    /// In case of re-election, this check will be performed multiple 
+    /// times to find a leader, panics when no leader is found.
+    /// Return the id of leader that has the newest term.
+    async fn check_one_leader(&self) -> usize {
+        for _ in 0..10 {
+            let ms = (rand::random::<u64>() % 100) + 450;
+            let d = std::time::Duration::from_millis(ms);
+            tokio::time::sleep(d).await;
+
+            let mut leader_terms = Vec::<usize>::new();
+            let config = self.0.read().await;
+            
+            for node in config.nodes.iter() {
+                let (term, is_leader) = match &node.raft {
+                    Some(raft) => raft.get_state().await,
+                    None => continue
+                };
+                
+                if is_leader {
+                    if leader_terms.contains(&term) {
+                        panic!("Term {term} has multiple leaders");
+                    }
+                    leader_terms.push(term);
+                }
+            }
+
+            if let Some(max_term) = leader_terms.into_iter().max() {
+                return max_term;
+            }
+        }
+        panic!("Expect one leader, got none");
+    }
+
+    async fn ingest_snapshot(&self, id: u32, snapshot: Vec<u8>, index: Option<usize>) {
+
+    }
 }
 
 impl Applier {
-    async fn run(mut self) {
+    async fn run(mut self, snap: bool) {
         while let Some(msg) = self.apply_ch.recv().await {
             match msg {
                 ApplyMsg::Command(cmd) => {
                     
                 },
-                ApplyMsg::Snapshot(snapshot) => {}
+                ApplyMsg::Snapshot(snapshot) if snap => {},
+                _ => panic!("Snapshot unexpected")
             }
         }
     }
@@ -58,7 +168,7 @@ impl Applier {
     /// Check applied commands index and term consistency,
     /// if ok, insert this command into logs.
     /// WARN: check_logs assume the Config.lock is hold by the caller.
-    async fn check_logs(&mut self, id: u32, cmd: Command) {
+    async fn check_logs(&self, id: u32, cmd: Command) {
         let cmd_value = bincode::deserialize::<u32>(&cmd.command[..])
             .expect("Expected command value type to be u32");
 
