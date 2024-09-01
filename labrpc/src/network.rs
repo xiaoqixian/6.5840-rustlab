@@ -99,6 +99,17 @@ impl Network {
         self.config.reliable.store(val, Ordering::Release);
     }
 
+    #[inline]
+    pub fn set_long_delay(&self, val: bool) {
+        self.config.long_delay.store(val, Ordering::Release);
+    }
+
+    #[inline]
+    pub fn long_delay(self, val: bool) -> Self {
+        self.set_long_delay(val);
+        self
+    }
+
     pub async fn join_one(&mut self) -> Client {
         let services = ServiceContainer::default();
 
@@ -113,6 +124,39 @@ impl Network {
         peers.insert(id, ClientEnd::new(id, self.tx.clone()));
         
         Client::new(id, self.peers.clone(), services)
+    }
+    
+    /// Delete a server from the cluster
+    pub async fn delete_server(&mut self, id: u32) {
+        {
+            let mut peers = self.peers.write().await;
+            if let None = peers.remove(&id) {
+                panic!("Server {id} does not exist in the network");
+            }
+        }
+
+        let mut servers = self.nodes.write().await;
+        let ret = servers.remove(&id);
+        assert!(ret.is_some());
+    }
+
+    async fn enable(&mut self, id: u32, enable: bool) {
+        let servers = self.nodes.write().await;
+        if let Some(server) = servers.get(&id) {
+            server.connected.store(enable, Ordering::Release);
+        }
+    }
+
+    /// Isolate a server, disconnect it from all other nodes.
+    /// But the server is still running, so it can be reconnected.
+    #[inline]
+    pub async fn disconnect(&mut self, id: u32) {
+        self.enable(id, false).await;
+    }
+
+    #[inline]
+    pub async fn connect(&mut self, id: u32) {
+        self.enable(id, true).await;
     }
 }
 
