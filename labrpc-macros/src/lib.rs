@@ -7,7 +7,7 @@ use std::fmt::Display;
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
-use syn::{parse_macro_input, spanned::Spanned, FnArg, ImplItem, ImplItemFn, ItemImpl, Receiver, Signature, Type, Visibility};
+use syn::{parse_macro_input, spanned::Spanned, FnArg, Generics, ImplItem, ImplItemFn, ItemImpl, Receiver, Signature, Type, Visibility};
 
 mod attr;
 
@@ -68,6 +68,13 @@ fn rpc_impl(attr_paths: attr::AttrPaths, input: ItemImpl) -> Result<TokenStream2
         ..
     } = input.clone();
 
+    let Generics {
+        lt_token,
+        params,
+        gt_token,
+        where_clause
+    } = generics;
+
     let attr::AttrPaths {
         trait_path,
         res_path,
@@ -122,7 +129,7 @@ fn rpc_impl(attr_paths: attr::AttrPaths, input: ItemImpl) -> Result<TokenStream2
 
     let impl_ = quote! {
         #[async_trait::async_trait]
-        impl #generics #trait_path for #self_ty #generics {
+        impl #lt_token #params #gt_token #trait_path for #self_ty #where_clause {
             async fn call(&self, method: &str, arg: &[u8]) -> #res_path {
                 match method {
                     #(#var_to_call),*
