@@ -2,7 +2,7 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use std::{collections::HashMap, sync::{atomic::{AtomicBool, Ordering}, Arc}};
+use std::{collections::HashMap, sync::{atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering}, Arc}};
 use tokio::sync::{mpsc as tk_mpsc, RwLock};
 
 use crate::{
@@ -31,13 +31,17 @@ pub struct Network {
     tx: UbTx<Msg>,
     config: NetworkConfig,
     nodes: ServerTable,
-    peers: Peers
+    peers: Peers,
+    rpc_cnt: Arc<AtomicU32>,
+    byte_cnt: Arc<AtomicU64>
 }
 
 #[derive(Clone)]
 struct NetworkDaemon {
     nodes: ServerTable,
-    config: NetworkConfig
+    config: NetworkConfig,
+    rpc_cnt: Arc<AtomicU32>,
+    byte_cnt: Arc<AtomicU64>
 }
 
 struct ServerNode {
@@ -74,17 +78,23 @@ impl Network {
         let (tx, rx) = tk_mpsc::unbounded_channel();
 
         let nodes = ServerTable::default();
+        let rpc_cnt: Arc<AtomicU32> = Default::default();
+        let byte_cnt: Arc<AtomicU64> = Default::default();
 
         tokio::spawn(NetworkDaemon {
             nodes: nodes.clone(),
-            config: config.clone()
+            config: config.clone(),
+            rpc_cnt: rpc_cnt.clone(),
+            byte_cnt: byte_cnt.clone()
         }.run(rx));
 
         Self {
             tx,
             config,
             nodes,
-            peers: Default::default()
+            peers: Default::default(),
+            rpc_cnt,
+            byte_cnt
         }
     }
 
@@ -158,11 +168,25 @@ impl Network {
     pub async fn connect(&mut self, id: u32) {
         self.enable(id, true).await;
     }
+
+    #[inline]
+    pub fn rpc_cnt(&self) -> u32 {
+        self.rpc_cnt.load(Ordering::Acquire)
+    }
+
+    #[inline]
+    pub fn byte_cnt(&self) -> u64 {
+        self.byte_cnt.load(Ordering::Acquire)
+    }
 }
 
 impl NetworkDaemon {
     async fn run(self, mut rx: UbRx<Msg>) {
         while let Some(msg) = rx.recv().await {
+            self.rpc_cnt.fetch_add(1, Ordering::AcqRel);
+            let bytes = msg.req.arg.len() as u64;
+            self.byte_cnt.fetch_add(bytes, Ordering::AcqRel);
+
             tokio::spawn(self.clone().process_msg(msg));
         }
     }
