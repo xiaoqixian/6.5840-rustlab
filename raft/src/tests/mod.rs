@@ -5,7 +5,7 @@
 #[cfg(test)]
 mod test_3a;
 
-use std::{collections::HashMap, ops::DerefMut, sync::Arc};
+use std::{ops::DerefMut, sync::Arc};
 
 use labrpc::network::Network;
 use tokio::sync::{Mutex, RwLock};
@@ -24,6 +24,8 @@ struct Config {
     bytes: usize,
     nodes: Vec<Node>,
     logs: Arc<Mutex<Logs>>,
+    
+    start: std::time::Instant
 }
 
 struct Logs {
@@ -56,7 +58,8 @@ impl Tester {
                     raft: None,
                     connected: true
                 })
-                .collect()
+                .collect(),
+            start: std::time::Instant::now()
         };
         
         let tester = Self(Arc::new(RwLock::new(config)));
@@ -64,6 +67,24 @@ impl Tester {
             tester.start1(i, snapshot).await;
         }
         tester
+    }
+
+    async fn begin<T: std::fmt::Display>(&self, desc: T) {
+        println!("{desc}...");
+        self.0.write().await.start = std::time::Instant::now();
+    }
+
+    async fn end(&self) {
+        let config = self.0.read().await;
+        
+        let t = config.start.elapsed();
+        let nrpc = config.net.rpc_cnt();
+        let nbytes = config.net.byte_cnt();
+        let ncmd = config.logs.lock().await.max_cmd_indx;
+        
+        println!(" ... Passed --");
+        println!(" {}ms, {} peers, {} rpc, {} bytes, {} cmds", 
+            t.as_millis(), config.n, nrpc, nbytes, ncmd);
     }
 
     async fn start1(&self, id: u32, snapshot: bool) {
@@ -147,9 +168,30 @@ impl Tester {
         panic!("Expect one leader, got none");
     }
 
+    /// Check if all nodes agree on their terms, 
+    /// return the term if agree.
+    async fn check_terms(&self) -> usize {
+        let mut term = None;
+        let config = self.0.read().await;
+
+        for (id, node) in config.nodes.iter().enumerate() {
+            if let Some(raft) = &node.raft {
+                let (iterm, _) = raft.get_state().await;
+                term = match term {
+                    Some(term) if term == iterm => Some(term),
+                    Some(term) => panic!("Servers {id} with term {iterm} disagree on term {term}"),
+                    None => Some(iterm)
+                };
+            }
+        }
+        term.expect("Servers return no term")
+    }
+
     async fn ingest_snapshot(&self, id: u32, snapshot: Vec<u8>, index: Option<usize>) {
 
     }
+
+    
 }
 
 impl Applier {

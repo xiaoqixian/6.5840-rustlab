@@ -46,4 +46,20 @@ async fn test_3a_initial_election() {
     const RELIABLE: bool = false;
     const SNAPSHOT: bool = false;
     let tester = Tester::new(N, RELIABLE, SNAPSHOT).await;
+
+    tester.begin("Test (3A): initial election").await;
+    // sleep a while to avoid racing with followers learning 
+    // of the election, then check all peers agree on the term.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let term1 = tester.check_terms().await;
+
+    tokio::time::sleep(ELECTION_TIMEOUT * 2).await;
+    let term2 = tester.check_terms().await;
+
+    if term1 != term2 {
+        println!("Warning: term changed even though there are no failures");
+    }
+
+    tester.check_one_leader().await;
+    tester.end().await;
 }
