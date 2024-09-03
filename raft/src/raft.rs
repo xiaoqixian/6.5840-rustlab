@@ -11,7 +11,12 @@ use crate::{
 };
 
 // The Raft object to implement a single raft node.
-pub struct Raft {}
+pub struct Raft {
+    me: u32,
+    rpc_client: Client,
+    persister: Persister,
+    apply_ch: Tx<ApplyMsg>,
+}
 
 /// Raft implementation.
 /// Most API are marked as async functions, and they will called
@@ -36,9 +41,14 @@ impl Raft {
     ///
     /// `apply_ch` is a channel on which the tester or service expects Raft 
     /// to send ApplyMsg message.
-    pub fn new(client: Client, me: u32, persister: Option<Persister>, 
+    pub fn new(rpc_client: Client, me: u32, persister: Persister, 
         apply_ch: Tx<ApplyMsg>) -> Self {
-        Self {}
+        Self {
+            me,
+            rpc_client,
+            persister,
+            apply_ch
+        }
     }
 
     /// Get the state of this server, 
