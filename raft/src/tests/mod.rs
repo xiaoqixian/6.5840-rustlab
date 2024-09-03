@@ -5,7 +5,7 @@
 #[cfg(test)]
 mod test_3a;
 
-use std::{ops::DerefMut, sync::Arc};
+use std::{collections::HashMap, ops::DerefMut, sync::Arc};
 
 use labrpc::network::Network;
 use tokio::sync::{Mutex, RwLock};
@@ -138,31 +138,35 @@ impl Tester {
     /// In case of re-election, this check will be performed multiple 
     /// times to find a leader, panics when no leader is found.
     /// Return the id of leader that has the newest term.
-    async fn check_one_leader(&self) -> usize {
+    async fn check_one_leader(&self) -> u32 {
         for _ in 0..10 {
             let ms = (rand::random::<u64>() % 100) + 450;
             let d = std::time::Duration::from_millis(ms);
             tokio::time::sleep(d).await;
 
-            let mut leader_terms = Vec::<usize>::new();
-            let config = self.0.read().await;
-            
-            for node in config.nodes.iter() {
-                let (term, is_leader) = match &node.raft {
-                    Some(raft) => raft.get_state().await,
-                    None => continue
-                };
+            let mut leader_terms = HashMap::<usize, u32>::new();
+
+            {
+                let config = self.0.read().await;
                 
-                if is_leader {
-                    if leader_terms.contains(&term) {
-                        panic!("Term {term} has multiple leaders");
+                for (id, node) in config.nodes.iter().enumerate() {
+                    let (term, is_leader) = match &node.raft {
+                        Some(raft) => raft.get_state().await,
+                        None => continue
+                    };
+                    
+                    if is_leader {
+                        if leader_terms.get(&term).is_some() {
+                            panic!("Term {term} has multiple leaders");
+                        }
+                        leader_terms.insert(term, id as u32);
                     }
-                    leader_terms.push(term);
                 }
             }
 
-            if let Some(max_term) = leader_terms.into_iter().max() {
-                return max_term;
+            if let Some(max) = leader_terms.into_iter()
+                .max_by_key(|x| x.0) {
+                return max.1;
             }
         }
         panic!("Expect one leader, got none");
@@ -187,11 +191,41 @@ impl Tester {
         term.expect("Servers return no term")
     }
 
+    // expect none of the nodes claims to be a leader
+    async fn check_no_leader(&self) {
+        let config = self.0.read().await;
+        for (id, node) in config.nodes.iter().enumerate() {
+            if !node.connected || node.raft.is_none() {
+                continue;
+            }
+
+            let (_, is_leader) = node.raft.as_ref()
+                .unwrap().get_state().await;
+            if is_leader {
+                panic!("Expected no leader among connected servers, 
+                    but {id} claims to be a leader");
+            }
+        }
+    }
+
     async fn ingest_snapshot(&self, id: u32, snapshot: Vec<u8>, index: Option<usize>) {
 
     }
 
-    
+    async fn enable(&self, id: u32, enable: bool) {
+        let mut config = self.0.write().await;
+        config.nodes[id as usize].connected = enable;
+        config.net.enable(id, enable).await;
+    }
+
+    #[inline]
+    async fn disconnect(&self, id: u32) {
+        self.enable(id, false).await;
+    }
+    #[inline]
+    async fn connect(&self, id: u32) {
+        self.enable(id, true).await;
+    }
 }
 
 impl Applier {
