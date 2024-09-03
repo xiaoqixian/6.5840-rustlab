@@ -150,7 +150,7 @@ impl Network {
         assert!(ret.is_some());
     }
 
-    async fn enable(&mut self, id: u32, enable: bool) {
+    pub async fn enable(&mut self, id: u32, enable: bool) {
         let servers = self.nodes.write().await;
         if let Some(server) = servers.get(&id) {
             server.connected.store(enable, Ordering::Release);
