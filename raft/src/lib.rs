@@ -5,9 +5,12 @@
 pub mod raft;
 pub mod msg;
 pub(crate) mod persist;
+mod follower;
 
 type Tx<T> = tokio::sync::mpsc::UnboundedSender<T>;
 type Rx<T> = tokio::sync::mpsc::UnboundedReceiver<T>;
+
+trait Role {}
 
 #[cfg(test)]
 pub mod tests;

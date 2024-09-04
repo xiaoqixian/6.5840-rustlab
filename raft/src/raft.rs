@@ -10,13 +10,15 @@ use crate::{
     persist::Persister
 };
 
-// The Raft object to implement a single raft node.
-pub struct Raft {
+pub struct RaftCore {
     me: u32,
     rpc_client: Client,
     persister: Persister,
     apply_ch: Tx<ApplyMsg>,
 }
+
+// The Raft object to implement a single raft node.
+pub struct Raft {}
 
 /// Raft implementation.
 /// Most API are marked as async functions, and they will called
@@ -43,11 +45,13 @@ impl Raft {
     /// to send ApplyMsg message.
     pub fn new(rpc_client: Client, me: u32, persister: Persister, 
         apply_ch: Tx<ApplyMsg>) -> Self {
-        Self {
+        let core = RaftCore {
             me,
             rpc_client,
             persister,
             apply_ch
+        };
+        Self {
         }
     }
 
