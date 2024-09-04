@@ -22,7 +22,7 @@ pub use service::{Service, CallResult};
 #[cfg(test)]
 mod tests {
     use labrpc_macros::rpc;
-    use crate::{err::{self, PEER_NOT_FOUND, TIMEOUT}, service::CallResult, Service};
+    use crate::{err::{self, TIMEOUT}, service::CallResult, Service};
 
     struct Hello;
 
@@ -105,9 +105,15 @@ mod tests {
             Ok("Hello, Lunar".to_string()),
             client0.unicast::<_, String>(1, "Hello.hello", "Lunar".to_string()).await
         );
+        // server[2] should be disabled.
         assert_eq!(
             Err(TIMEOUT),
             client0.unicast::<_, String>(2, "Hello.hello", "Lunar".to_string()).await
+        );
+        // client[2] should be disabled too.
+        assert_eq!(
+            Err(TIMEOUT),
+            clients[2].unicast::<_, String>(1, "Hello.hello", "Lunar".to_string()).await
         );
 
         network.connect(2).await;
@@ -115,13 +121,9 @@ mod tests {
             Ok("Hello, Lunar".to_string()),
             client0.unicast::<_, String>(2, "Hello.hello", "Lunar".to_string()).await
         );
-
-        network.delete_server(2).await;
         assert_eq!(
-            Err(PEER_NOT_FOUND),
-            client0.unicast::<_, String>(2, "Hello.hello", "Lunar".to_string()).await
+            Ok("Hello, Lunar".to_string()),
+            clients[2].unicast::<_, String>(1, "Hello.hello", "Lunar".to_string()).await
         );
-
-        network.join_at(2).await;
     }
 }

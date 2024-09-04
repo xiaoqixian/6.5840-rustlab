@@ -33,7 +33,8 @@ pub struct Network {
     nodes: ServerTable,
     peers: Peers,
     rpc_cnt: Arc<AtomicU32>,
-    byte_cnt: Arc<AtomicU64>
+    byte_cnt: Arc<AtomicU64>,
+    connected: HashMap<usize, Arc<AtomicBool>>
 }
 
 #[derive(Clone)]
@@ -94,7 +95,8 @@ impl Network {
             nodes,
             peers: Default::default(),
             rpc_cnt,
-            byte_cnt
+            byte_cnt,
+            connected: Default::default()
         }
     }
 
@@ -146,7 +148,10 @@ impl Network {
 
         let mut peers = self.peers.write().await;
         peers.insert(id, ClientEnd::new(id, self.tx.clone()));
-        Client::new(id, self.peers.clone(), services)
+
+        let connected = Arc::new(AtomicBool::new(true));
+        self.connected.insert(id, connected.clone());
+        Client::new(id, self.peers.clone(), services, connected)
     }
 
     #[inline]
@@ -178,6 +183,11 @@ impl Network {
         if let Some(Some(server)) = servers.get(id) {
             server.connected.store(enable, Ordering::Release);
         }
+
+        // disable client
+        let conn = self.connected.get(&id)
+            .expect(&format!("Expect client {id} exist"));
+        conn.store(enable, Ordering::Release);
     }
 
     /// Isolate a server, disconnect it from all other nodes.

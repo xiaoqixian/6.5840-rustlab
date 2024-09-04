@@ -2,11 +2,10 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
+use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
+
 use crate::{
-    err::{Error, NetworkError, PEER_NOT_FOUND}, 
-    msg::{Msg, RpcReq}, Rx, UbTx,
-    network::{Peers, ServiceContainer},
-    Service
+    err::{Error, NetworkError, PEER_NOT_FOUND, TIMEOUT}, msg::{Msg, RpcReq}, network::{Peers, ServiceContainer}, Rx, Service, UbTx
 };
 
 use serde::{Serialize, de::DeserializeOwned};
@@ -27,7 +26,10 @@ pub(crate) struct ClientEnd {
 pub struct Client {
     id: usize,
     peers: Peers,
-    services: ServiceContainer
+    services: ServiceContainer,
+    // if not connected, the client is unable to 
+    // send any request to the network.
+    connected: Arc<AtomicBool>
 }
 
 impl ClientEnd {
@@ -77,15 +79,21 @@ impl ClientEnd {
 }
 
 impl Client {
-    pub(crate) fn new(id: usize, peers: Peers, services: ServiceContainer) -> Self {
-        Self { id, peers, services }
+    pub(crate) fn new(id: usize, peers: Peers, services: ServiceContainer, 
+        connected: Arc<AtomicBool>) -> Self {
+        Self { id, peers, services, connected }
     }
 
     #[inline]
-    pub fn id(&self) -> usize {
-        self.id
+    fn connected(&self) -> bool {
+        self.connected.load(Ordering::Acquire)
     }
 
+    // #[inline]
+    // pub fn id(&self) -> usize {
+    //     self.id
+    // }
+    //
     #[inline]
     pub async fn add_service(&mut self, name: String, service: Box<dyn Service>) {
         self.services.write().await.insert(name, service);
@@ -94,6 +102,10 @@ impl Client {
     pub async fn unicast<A, R>(&self, to: usize, meth: &str, arg: A) -> Result<R, Error> 
         where A: Serialize, R: DeserializeOwned
     {
+        if !self.connected() {
+            return Err(TIMEOUT);
+        }
+
         match self.peers.read().await.get(&to) {
             None => Err(PEER_NOT_FOUND),
             Some(peer) => peer.call(meth, arg).await
@@ -104,6 +116,10 @@ impl Client {
         where A: Serialize + Clone + Send + Sync + 'static,
             R: DeserializeOwned + Send + Sync + 'static
     {
+        if !self.connected() {
+            return Err(TIMEOUT);
+        }
+
         let (tx, rx) = tokio::sync::mpsc::channel(to.len());
         let meth = String::from(meth);
         let peers = self.peers.read().await;
@@ -130,6 +146,10 @@ impl Client {
         where A: Serialize + Clone + Send + Sync + 'static,
             R: DeserializeOwned + Send + Sync + 'static
     {
+        if !self.connected() {
+            return Err(TIMEOUT);
+        }
+
         let peers = self.peers.read().await;
         let (tx, rx) = tokio::sync::mpsc::channel(peers.len());
         let meth = String::from(meth);
