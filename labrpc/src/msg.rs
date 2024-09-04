@@ -12,7 +12,7 @@ pub(crate) struct RpcReq {
 }
 
 pub(crate) struct Msg {
-    pub end_id: u32,
+    pub end_id: usize,
     pub req: RpcReq,
     pub reply_tx: OneTx<CallResult>
 }

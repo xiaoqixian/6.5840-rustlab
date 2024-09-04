@@ -17,7 +17,7 @@ use serde::{Serialize, de::DeserializeOwned};
 /// RPC server.
 #[derive(Clone)]
 pub(crate) struct ClientEnd {
-    id: u32,
+    id: usize,
     net_tx: UbTx<Msg>
 }
 
@@ -25,13 +25,13 @@ pub(crate) struct ClientEnd {
 /// so you can use it to unicast a request to a server, 
 /// or broadcast your requests to all servers.
 pub struct Client {
-    id: u32,
+    id: usize,
     peers: Peers,
     services: ServiceContainer
 }
 
 impl ClientEnd {
-    pub fn new(id: u32, net_tx: UbTx<Msg>) -> Self {
+    pub fn new(id: usize, net_tx: UbTx<Msg>) -> Self {
         Self { id, net_tx }
     }
 
@@ -77,12 +77,12 @@ impl ClientEnd {
 }
 
 impl Client {
-    pub(crate) fn new(id: u32, peers: Peers, services: ServiceContainer) -> Self {
+    pub(crate) fn new(id: usize, peers: Peers, services: ServiceContainer) -> Self {
         Self { id, peers, services }
     }
 
     #[inline]
-    pub fn id(&self) -> u32 {
+    pub fn id(&self) -> usize {
         self.id
     }
 
@@ -91,7 +91,7 @@ impl Client {
         self.services.write().await.insert(name, service);
     }
 
-    pub async fn unicast<A, R>(&self, to: u32, meth: &str, arg: A) -> Result<R, Error> 
+    pub async fn unicast<A, R>(&self, to: usize, meth: &str, arg: A) -> Result<R, Error> 
         where A: Serialize, R: DeserializeOwned
     {
         match self.peers.read().await.get(&to) {
@@ -100,7 +100,7 @@ impl Client {
         }
     }
 
-    pub async fn multicast<A, R>(&self, to: &[u32], meth: &str, arg: A) -> Result<Rx<Result<R, Error>>, Error> 
+    pub async fn multicast<A, R>(&self, to: &[usize], meth: &str, arg: A) -> Result<Rx<Result<R, Error>>, Error> 
         where A: Serialize + Clone + Send + Sync + 'static,
             R: DeserializeOwned + Send + Sync + 'static
     {

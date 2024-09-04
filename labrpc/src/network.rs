@@ -15,10 +15,10 @@ use crate::{
 
 use super::UbTx;
 
-pub(crate) type Peers = Arc<RwLock<HashMap<u32, ClientEnd>>>;
+pub(crate) type Peers = Arc<RwLock<HashMap<usize, ClientEnd>>>;
 pub(crate) type ServiceContainer = Arc<RwLock<HashMap<String, Box<dyn Service>>>>;
 
-type ServerTable = Arc<RwLock<HashMap<u32, ServerNode>>>;
+type ServerTable = Arc<RwLock<Vec<Option<ServerNode>>>>;
 
 #[derive(Clone)]
 struct NetworkConfig {
@@ -120,24 +120,47 @@ impl Network {
         self
     }
 
-    pub async fn join_one(&mut self) -> Client {
+    // join a old or new server, if id.is_none(), 
+    // then it's a new server.
+    async fn join(&mut self, id: Option<usize>) -> Client {
         let services = ServiceContainer::default();
 
-        let mut nodes = self.nodes.write().await;
-        let id = nodes.len() as u32;
-        nodes.insert(id, ServerNode {
-            server: Server::new(services.clone()),
-            connected: Arc::new(AtomicBool::new(true))
-        });
-        
+        // let the nodes lock early released.
+        let id = {
+            let mut nodes = self.nodes.write().await;
+            let id = match id {
+                Some(id) => id,
+                None => {
+                    nodes.push(None);
+                    nodes.len() - 1
+                }
+            };
+            assert!(id < nodes.len());
+
+            nodes[id] = Some(ServerNode {
+                server: Server::new(services.clone()),
+                connected: Arc::new(AtomicBool::new(true))
+            });
+            id
+        };
+
         let mut peers = self.peers.write().await;
         peers.insert(id, ClientEnd::new(id, self.tx.clone()));
-        
         Client::new(id, self.peers.clone(), services)
+    }
+
+    #[inline]
+    pub async fn join_one(&mut self) -> Client {
+        self.join(None).await
+    }
+
+    #[inline]
+    pub async fn join_at(&mut self, id: usize) -> Client {
+        self.join(Some(id)).await
     }
     
     /// Delete a server from the cluster
-    pub async fn delete_server(&mut self, id: u32) {
+    pub async fn delete_server(&mut self, id: usize) {
         {
             let mut peers = self.peers.write().await;
             if let None = peers.remove(&id) {
@@ -146,13 +169,13 @@ impl Network {
         }
 
         let mut servers = self.nodes.write().await;
-        let ret = servers.remove(&id);
+        let ret = servers.get_mut(id).take();
         assert!(ret.is_some());
     }
 
-    pub async fn enable(&mut self, id: u32, enable: bool) {
+    pub async fn enable(&mut self, id: usize, enable: bool) {
         let servers = self.nodes.write().await;
-        if let Some(server) = servers.get(&id) {
+        if let Some(Some(server)) = servers.get(id) {
             server.connected.store(enable, Ordering::Release);
         }
     }
@@ -160,12 +183,12 @@ impl Network {
     /// Isolate a server, disconnect it from all other nodes.
     /// But the server is still running, so it can be reconnected.
     #[inline]
-    pub async fn disconnect(&mut self, id: u32) {
+    pub async fn disconnect(&mut self, id: usize) {
         self.enable(id, false).await;
     }
 
     #[inline]
-    pub async fn connect(&mut self, id: u32) {
+    pub async fn connect(&mut self, id: usize) {
         self.enable(id, true).await;
     }
 
@@ -201,11 +224,11 @@ impl NetworkDaemon {
         reply_tx.send(result).unwrap()
     }
 
-    async fn dispatch(&self, end_id: u32, req: RpcReq) -> CallResult {
+    async fn dispatch(&self, end_id: usize, req: RpcReq) -> CallResult {
         let nodes = self.nodes.read().await;
 
-        let node = match nodes.get(&end_id) {
-            Some(node) if node.connected() => Some(node),
+        let node = match nodes.get(end_id) {
+            Some(Some(node)) if node.connected() => Some(node),
             _ => None
         };
 

@@ -22,7 +22,7 @@ pub use service::{Service, CallResult};
 #[cfg(test)]
 mod tests {
     use labrpc_macros::rpc;
-    use crate::{Service, service::CallResult, err};
+    use crate::{err::{self, PEER_NOT_FOUND, TIMEOUT}, service::CallResult, Service};
 
     struct Hello;
 
@@ -87,4 +87,41 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn net_change_test() {
+        let mut network = crate::network::Network::new();
+
+        let mut clients = Vec::with_capacity(5);
+        for _ in 0..5 {
+            let mut c = network.join_one().await;
+            c.add_service("Hello".to_string(), Box::new(Hello)).await;
+            clients.push(c);
+        }
+
+        let client0 = &clients[0];
+
+        network.disconnect(2).await;
+        assert_eq!(
+            Ok("Hello, Lunar".to_string()),
+            client0.unicast::<_, String>(1, "Hello.hello", "Lunar".to_string()).await
+        );
+        assert_eq!(
+            Err(TIMEOUT),
+            client0.unicast::<_, String>(2, "Hello.hello", "Lunar".to_string()).await
+        );
+
+        network.connect(2).await;
+        assert_eq!(
+            Ok("Hello, Lunar".to_string()),
+            client0.unicast::<_, String>(2, "Hello.hello", "Lunar".to_string()).await
+        );
+
+        network.delete_server(2).await;
+        assert_eq!(
+            Err(PEER_NOT_FOUND),
+            client0.unicast::<_, String>(2, "Hello.hello", "Lunar".to_string()).await
+        );
+
+        network.join_at(2).await;
+    }
 }
