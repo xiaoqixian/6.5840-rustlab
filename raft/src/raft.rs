@@ -21,14 +21,14 @@ pub struct RaftCore {
 }
 
 // The Raft object to implement a single raft node.
-#[derive(Clone)]
 pub struct Raft {
-    ev_q: EvQueue
+    core: Arc<RaftCore>,
+    role: Role
 }
 
 struct EventProcessor {
     ev_ch: UbRx<Event>,
-    core: RaftCore
+    core: Arc<RaftCore>
 }
 
 /// Raft implementation.
@@ -58,8 +58,23 @@ impl Raft {
         apply_ch: UbTx<ApplyMsg>) -> Self {
 
         let (ev_ch_tx, ev_ch_rx) = tokio::sync::mpsc::unbounded_channel();
+        let ev_q = EvQueue::new(ev_ch_tx);
+
+        let core = RaftCore {
+            me,
+            rpc_client,
+            persister,
+            apply_ch,
+            term: 0,
+            ev_q
+        };
+        let core = Arc::new(core);
+
+        let flw = Follower::new(core.clone());
+
         Self {
-            ev_q: EvQueue::new(ev_ch_tx)
+            core,
+            role: Role::Follower(flw)
         }
     }
 
@@ -69,7 +84,7 @@ impl Raft {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let mut ev = Event::GetState(tx);
         loop {
-            ev = match self.ev_q.put(ev).await {
+            ev = match self.core.ev_q.put(ev).await {
                 Ok(_) => break,
                 Err(ev) => ev
             };
