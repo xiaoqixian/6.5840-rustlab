@@ -2,15 +2,31 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
+
 pub mod raft;
 pub mod msg;
 pub(crate) mod persist;
+
 mod follower;
+mod candidate;
+mod leader;
+mod utils;
+mod event;
 
-type Tx<T> = tokio::sync::mpsc::UnboundedSender<T>;
-type Rx<T> = tokio::sync::mpsc::UnboundedReceiver<T>;
+type UbTx<T> = tokio::sync::mpsc::UnboundedSender<T>;
+type UbRx<T> = tokio::sync::mpsc::UnboundedReceiver<T>;
+type OneTx<T> = tokio::sync::oneshot::Sender<T>;
+type OneRx<T> = tokio::sync::oneshot::Receiver<T>;
 
-trait Role {}
+use follower::Follower;
+use candidate::Candidate;
+use leader::Leader;
+
+enum Role {
+    Follower(Follower),
+    Candidate(Candidate),
+    Leader(Leader)
+}
 
 #[cfg(test)]
 pub mod tests;

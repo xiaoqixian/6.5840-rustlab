@@ -2,23 +2,34 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
+use std::{sync::Arc, time::Duration};
+
 use labrpc::client::Client;
+use tokio::sync::Mutex;
 
 use crate::{
-    Tx,
-    msg::ApplyMsg,
-    persist::Persister
+    event::{EvQueue, Event}, follower::Follower, msg::ApplyMsg, persist::Persister, Role, UbRx, UbTx
 };
 
 pub struct RaftCore {
-    me: u32,
-    rpc_client: Client,
-    persister: Persister,
-    apply_ch: Tx<ApplyMsg>,
+    pub(crate) me: u32,
+    pub(crate) rpc_client: Client,
+    pub(crate) persister: Persister,
+    pub(crate) apply_ch: UbTx<ApplyMsg>,
+    pub(crate) term: usize,
+    pub(crate) ev_q: EvQueue
 }
 
 // The Raft object to implement a single raft node.
-pub struct Raft {}
+#[derive(Clone)]
+pub struct Raft {
+    ev_q: EvQueue
+}
+
+struct EventProcessor {
+    ev_ch: UbRx<Event>,
+    core: RaftCore
+}
 
 /// Raft implementation.
 /// Most API are marked as async functions, and they will called
@@ -44,21 +55,27 @@ impl Raft {
     /// `apply_ch` is a channel on which the tester or service expects Raft 
     /// to send ApplyMsg message.
     pub fn new(rpc_client: Client, me: u32, persister: Persister, 
-        apply_ch: Tx<ApplyMsg>) -> Self {
-        let core = RaftCore {
-            me,
-            rpc_client,
-            persister,
-            apply_ch
-        };
+        apply_ch: UbTx<ApplyMsg>) -> Self {
+
+        let (ev_ch_tx, ev_ch_rx) = tokio::sync::mpsc::unbounded_channel();
         Self {
+            ev_q: EvQueue::new(ev_ch_tx)
         }
     }
 
     /// Get the state of this server, 
     /// return the server's term and if itself believes it's a leader.
     pub async fn get_state(&self) -> (usize, bool) {
-        (0, false)
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut ev = Event::GetState(tx);
+        loop {
+            ev = match self.ev_q.put(ev).await {
+                Ok(_) => break,
+                Err(ev) => ev
+            };
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        rx.await.unwrap()
     }
 
     /// Persist essential data with persister, the data will be used 
@@ -95,7 +112,7 @@ impl Raft {
     /// Some((A, B)), where A is the index that the command will appear
     /// at if it's ever committed, B is the current term.
     /// If it does not, it should just return None.
-    pub async fn start(command: Vec<u8>) -> Option<(usize, usize)> {
+    pub async fn start(&mut self, command: Vec<u8>) -> Option<(usize, usize)> {
         None
     }
 
