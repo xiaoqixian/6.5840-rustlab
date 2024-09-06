@@ -5,11 +5,11 @@
 #[cfg(test)]
 mod test_3a;
 
-use std::{collections::HashMap, ops::DerefMut, sync::Arc};
+use std::{collections::HashMap, ops::DerefMut, sync::{atomic::{AtomicBool, Ordering}, Arc}, time::Duration};
 
 use labrpc::network::Network;
 use tokio::sync::{Mutex, RwLock};
-use crate::{msg::{ApplyMsg, Command}, persist::Persister, raft::Raft, Rx};
+use crate::{msg::{ApplyMsg, Command}, persist::Persister, raft::Raft, UbRx};
 
 struct Node {
     last_applied: usize,
@@ -25,7 +25,7 @@ struct Config {
     nodes: Vec<Node>,
     logs: Arc<Mutex<Logs>>,
     
-    start: std::time::Instant
+    start: std::time::Instant,
 }
 
 struct Logs {
@@ -34,15 +34,19 @@ struct Logs {
 }
 
 struct Applier {
-    id: u32,
+    id: usize,
     logs: Arc<Mutex<Logs>>,
-    apply_ch: Rx<ApplyMsg>
+    apply_ch: UbRx<ApplyMsg>
 }
 
-struct Tester(Arc<RwLock<Config>>);
+struct Tester {
+    config: Arc<RwLock<Config>>,
+    time_limit: Duration,
+    finished: Arc<AtomicBool>
+}
 
 impl Tester {
-    pub async fn new(n: usize, reliable: bool, snapshot: bool) -> Self {
+    pub async fn new(n: usize, reliable: bool, snapshot: bool, time_limit: Duration) -> Self {
         let config = Config {
             n,
             bytes: 0,
@@ -62,20 +66,38 @@ impl Tester {
             start: std::time::Instant::now()
         };
         
-        let tester = Self(Arc::new(RwLock::new(config)));
-        for i in 0..n as u32 {
+        let tester = Self{ 
+            config: Arc::new(RwLock::new(config)),
+            time_limit,
+            finished: Default::default()
+        };
+
+        for i in 0..n {
             tester.start1(i, snapshot).await;
         }
+        
         tester
     }
 
     async fn begin<T: std::fmt::Display>(&self, desc: T) {
         println!("{desc}...");
-        self.0.write().await.start = std::time::Instant::now();
+        self.config.write().await.start = std::time::Instant::now();
+        
+        let time_limit = self.time_limit.clone();
+        let finished = self.finished.clone();
+        let msg = format!("{desc} unable to finish in {} seconds", 
+            time_limit.as_secs());
+        tokio::spawn(async move {
+            tokio::time::sleep(time_limit).await;
+            if !finished.load(Ordering::Acquire) {
+                panic!("{msg}");
+            }
+        });
     }
 
     async fn end(&self) {
-        let config = self.0.read().await;
+        self.finished.store(true, Ordering::Release);
+        let config = self.config.read().await;
         
         let t = config.start.elapsed();
         let nrpc = config.net.rpc_cnt();
@@ -87,10 +109,10 @@ impl Tester {
             t.as_millis(), config.n, nrpc, nbytes, ncmd);
     }
 
-    async fn start1(&self, id: u32, snapshot: bool) {
+    async fn start1(&self, id: usize, snapshot: bool) {
         self.crash1(id).await;
 
-        let mut config = self.0.write().await;
+        let mut config = self.config.write().await;
         let Config {
             net,
             nodes,
@@ -106,7 +128,7 @@ impl Tester {
         let persister = node.persister.clone().await;
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let raft = Raft::new(client, id, Some(persister), tx);
+        let raft = Raft::new(client, id, persister, tx);
         
         node.raft = Some(raft);
         
@@ -117,9 +139,9 @@ impl Tester {
         }.run(snapshot));
     }
 
-    async fn crash1(&self, id: u32) {
+    async fn crash1(&self, id: usize) {
         let raft_node = {
-            let mut config = self.0.write().await;
+            let mut config = self.config.write().await;
             let node = &mut config.nodes[id as usize];
 
             // as this Persister is hold by the old raft node as well,
@@ -138,16 +160,16 @@ impl Tester {
     /// In case of re-election, this check will be performed multiple 
     /// times to find a leader, panics when no leader is found.
     /// Return the id of leader that has the newest term.
-    async fn check_one_leader(&self) -> u32 {
+    async fn check_one_leader(&self) -> usize {
         for _ in 0..10 {
             let ms = (rand::random::<u64>() % 100) + 450;
             let d = std::time::Duration::from_millis(ms);
             tokio::time::sleep(d).await;
 
-            let mut leader_terms = HashMap::<usize, u32>::new();
+            let mut leader_terms = HashMap::<usize, usize>::new();
 
             {
-                let config = self.0.read().await;
+                let config = self.config.read().await;
                 
                 for (id, node) in config.nodes.iter().enumerate() {
                     let (term, is_leader) = match &node.raft {
@@ -159,7 +181,7 @@ impl Tester {
                         if leader_terms.get(&term).is_some() {
                             panic!("Term {term} has multiple leaders");
                         }
-                        leader_terms.insert(term, id as u32);
+                        leader_terms.insert(term, id);
                     }
                 }
             }
@@ -176,7 +198,7 @@ impl Tester {
     /// return the term if agree.
     async fn check_terms(&self) -> usize {
         let mut term = None;
-        let config = self.0.read().await;
+        let config = self.config.read().await;
 
         for (id, node) in config.nodes.iter().enumerate() {
             if let Some(raft) = &node.raft {
@@ -193,7 +215,7 @@ impl Tester {
 
     // expect none of the nodes claims to be a leader
     async fn check_no_leader(&self) {
-        let config = self.0.read().await;
+        let config = self.config.read().await;
         for (id, node) in config.nodes.iter().enumerate() {
             if !node.connected || node.raft.is_none() {
                 continue;
@@ -208,22 +230,22 @@ impl Tester {
         }
     }
 
-    async fn ingest_snapshot(&self, id: u32, snapshot: Vec<u8>, index: Option<usize>) {
+    async fn ingest_snapshot(&self, id: usize, snapshot: Vec<u8>, index: Option<usize>) {
 
     }
 
-    async fn enable(&self, id: u32, enable: bool) {
-        let mut config = self.0.write().await;
+    async fn enable(&self, id: usize, enable: bool) {
+        let mut config = self.config.write().await;
         config.nodes[id as usize].connected = enable;
         config.net.enable(id, enable).await;
     }
 
     #[inline]
-    async fn disconnect(&self, id: u32) {
+    async fn disconnect(&self, id: usize) {
         self.enable(id, false).await;
     }
     #[inline]
-    async fn connect(&self, id: u32) {
+    async fn connect(&self, id: usize) {
         self.enable(id, true).await;
     }
 }
@@ -244,7 +266,7 @@ impl Applier {
     /// Check applied commands index and term consistency,
     /// if ok, insert this command into logs.
     /// WARN: check_logs assume the Config.lock is hold by the caller.
-    async fn check_logs(&self, id: u32, cmd: Command) {
+    async fn check_logs(&self, id: usize, cmd: Command) {
         let cmd_value = bincode::deserialize::<u32>(&cmd.command[..])
             .expect("Expected command value type to be u32");
 

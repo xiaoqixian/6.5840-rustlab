@@ -7,12 +7,14 @@ use super::Tester;
 
 const ELECTION_TIMEOUT: Duration = Duration::from_secs(1);
 
+const TIME_LIMIT: Duration = Duration::from_secs(120);
+
 #[tokio::test]
 async fn test_3a_initial_election() {
     const N: usize = 3;
     const RELIABLE: bool = false;
     const SNAPSHOT: bool = false;
-    let tester = Tester::new(N, RELIABLE, SNAPSHOT).await;
+    let tester = Tester::new(N, RELIABLE, SNAPSHOT, TIME_LIMIT).await;
 
     tester.begin("Test (3A): initial election").await;
     // sleep a while to avoid racing with followers learning 
@@ -36,7 +38,7 @@ async fn test_3a_reelection() {
     const N: usize = 3;
     const RELIABLE: bool = false;
     const SNAPSHOT: bool = false;
-    let tester = Tester::new(N, RELIABLE, SNAPSHOT).await;
+    let tester = Tester::new(N, RELIABLE, SNAPSHOT, TIME_LIMIT).await;
 
     tester.begin("Test (3A): election after network failure").await;
 
@@ -53,12 +55,12 @@ async fn test_3a_reelection() {
 
     // if there's no quorum, no new leader should be elected.
     tester.disconnect(leader2).await;
-    tester.disconnect((leader2 + 1) % N as u32).await;
+    tester.disconnect((leader2 + 1) % N).await;
     tokio::time::sleep(ELECTION_TIMEOUT * 2).await;
     tester.check_no_leader().await;
 
     // if a quorum arises, it should elect a leader.
-    tester.connect((leader2 + 1) % N as u32).await;
+    tester.connect((leader2 + 1) % N).await;
     tester.check_one_leader().await;
 
     tester.end().await;
@@ -69,16 +71,16 @@ async fn test_3a_many_election() {
     const N: usize = 7;
     const RELIABLE: bool = false;
     const SNAPSHOT: bool = false;
-    let tester = Tester::new(N, RELIABLE, SNAPSHOT).await;
+    let tester = Tester::new(N, RELIABLE, SNAPSHOT, TIME_LIMIT).await;
 
     tester.begin("Test (3A): multiple elections").await;
 
     tester.check_one_leader().await;
 
     for _ in 0..10 {
-        let i1 = rand::random::<u32>() % N as u32;
-        let i2 = rand::random::<u32>() % N as u32;
-        let i3 = rand::random::<u32>() % N as u32;
+        let i1 = rand::random::<usize>() % N;
+        let i2 = rand::random::<usize>() % N;
+        let i3 = rand::random::<usize>() % N;
         tester.disconnect(i1).await;
         tester.disconnect(i2).await;
         tester.disconnect(i3).await;
