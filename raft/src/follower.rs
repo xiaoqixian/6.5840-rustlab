@@ -4,20 +4,29 @@
 
 use std::sync::Arc;
 
-use crate::{raft::{Raft, RaftCore}, utils::{self, HEARTBEAT_TIMEOTU}};
-
-
+use crate::{event::{EvQueue, Event}, raft::{Raft, RaftCore}, utils::{self, HEARTBEAT_TIMEOUT}, Outcome};
 
 pub struct Follower {
     pub(crate) core: Arc<RaftCore>,
-    pub(crate) term: usize
 }
 
 impl Follower {
     pub fn new(core: Arc<RaftCore>) -> Self {
+        tokio::spawn(Self::start_timer(core.ev_q.clone()));
         Self {
             core,
-            term: 0
         }
+    }
+
+    async fn start_timer(ev_q: EvQueue) {
+        let d = utils::gen_rand_duration(HEARTBEAT_TIMEOUT);
+        tokio::time::sleep(d).await;
+        // heartbeat timer does not care if the event is 
+        // successfully put into queue.
+        let _ = ev_q.put(Event::HeartBeatTimeout).await;
+    }
+
+    pub async fn process(&mut self, ev: Event) -> Option<Outcome> {
+        None
     }
 }

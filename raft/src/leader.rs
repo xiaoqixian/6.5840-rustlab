@@ -5,6 +5,15 @@
 use crate::raft::RaftCore;
 
 pub struct Leader {
-    pub(crate) core: RaftCore,
-    pub(crate) term: usize
+    pub(crate) core: Arc<RaftCore>,
+}
+
+impl Leader {
+    pub fn new(core: Arc<RaftCore>) -> Self {
+        Self { core }
+    }
+
+    pub async fn process(&mut self, ev: Event) -> Option<Outcome> {
+        None
+    }
 }

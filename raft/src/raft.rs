@@ -8,11 +8,11 @@ use labrpc::client::Client;
 use tokio::sync::Mutex;
 
 use crate::{
-    event::{EvQueue, Event}, follower::Follower, msg::ApplyMsg, persist::Persister, Role, UbRx, UbTx
+    candidate::Candidate, event::{EvQueue, Event}, follower::Follower, leader::Leader, msg::ApplyMsg, persist::Persister, Outcome, Role, UbRx, UbTx
 };
 
 pub struct RaftCore {
-    pub(crate) me: u32,
+    pub(crate) me: usize,
     pub(crate) rpc_client: Client,
     pub(crate) persister: Persister,
     pub(crate) apply_ch: UbTx<ApplyMsg>,
@@ -23,12 +23,11 @@ pub struct RaftCore {
 // The Raft object to implement a single raft node.
 pub struct Raft {
     core: Arc<RaftCore>,
-    role: Role
 }
 
-struct EventProcessor {
-    ev_ch: UbRx<Event>,
-    core: Arc<RaftCore>
+struct RaftDaemon {
+    core: Arc<RaftCore>,
+    role: Role
 }
 
 /// Raft implementation.
@@ -54,7 +53,7 @@ impl Raft {
     ///
     /// `apply_ch` is a channel on which the tester or service expects Raft 
     /// to send ApplyMsg message.
-    pub fn new(rpc_client: Client, me: u32, persister: Persister, 
+    pub fn new(rpc_client: Client, me: usize, persister: Persister, 
         apply_ch: UbTx<ApplyMsg>) -> Self {
 
         let (ev_ch_tx, ev_ch_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -71,10 +70,14 @@ impl Raft {
         let core = Arc::new(core);
 
         let flw = Follower::new(core.clone());
+        let daemon = RaftDaemon {
+            core: core.clone(),
+            role: Role::Follower(flw)
+        };
+        tokio::spawn(daemon.run(ev_ch_rx));
 
         Self {
             core,
-            role: Role::Follower(flw)
         }
     }
 
@@ -133,4 +136,33 @@ impl Raft {
 
     /// Kill the server.
     pub async fn kill(&self) {}
+}
+
+impl RaftDaemon {
+    async fn run(mut self, mut ev_ch_rx: UbRx<Event>) {
+        while let Some(ev) = ev_ch_rx.recv().await {
+            match ev {
+                ev => match self.role.process(ev).await {
+                    None => {},
+                    Some(outcome) => match outcome {
+                        Outcome::BeCandidate => {
+                            assert!(self.role.is_follower());
+                            let cd = Candidate::new(self.core.clone());
+                            self.role = Role::Candidate(cd);
+                        },
+                        Outcome::BeLeader => {
+                            assert!(self.role.is_candidate());
+                            let ld = Leader::new(self.core.clone());
+                            self.role = Role::Leader(ld);
+                        },
+                        Outcome::BeFollower => {
+                            assert!(!self.role.is_follower());
+                            let flw = Follower::new(self.core.clone());
+                            self.role = Role::Follower(flw);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

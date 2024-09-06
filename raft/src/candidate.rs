@@ -2,9 +2,20 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use crate::raft::RaftCore;
+use std::sync::Arc;
+
+use crate::{event::Event, raft::RaftCore, Outcome};
 
 pub struct Candidate {
-    pub(crate) core: RaftCore,
-    pub(crate) term: usize
+    pub(crate) core: Arc<RaftCore>,
+}
+
+impl Candidate {
+    pub fn new(core: Arc<RaftCore>) -> Self {
+        Self { core }
+    }
+
+    pub async fn process(&mut self, ev: Event) -> Option<Outcome> {
+        None
+    }
 }
