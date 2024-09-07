@@ -2,31 +2,37 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use std::{sync::Arc, time::Duration};
+use std::{sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, Arc}, time::Duration};
 
 use labrpc::client::Client;
-use tokio::sync::Mutex;
 
 use crate::{
-    candidate::Candidate, event::{EvQueue, Event}, follower::Follower, leader::Leader, msg::ApplyMsg, persist::Persister, Outcome, Role, UbRx, UbTx
+    event::{EvQueue, Event}, 
+    follower::Follower, 
+    msg::ApplyMsg, 
+    persist::Persister, 
+    role::Role, UbRx, UbTx
 };
 
-pub struct RaftCore {
+pub(crate) struct RaftCore_ {
     pub(crate) me: usize,
+    pub(crate) dead: AtomicBool,
     pub(crate) rpc_client: Client,
     pub(crate) persister: Persister,
     pub(crate) apply_ch: UbTx<ApplyMsg>,
-    pub(crate) term: usize,
+    pub(crate) term: Arc<AtomicUsize>,
     pub(crate) ev_q: EvQueue
 }
 
+pub(crate) type RaftCore = Arc<RaftCore_>;
+
 // The Raft object to implement a single raft node.
 pub struct Raft {
-    core: Arc<RaftCore>,
+    core: RaftCore,
 }
 
 struct RaftDaemon {
-    core: Arc<RaftCore>,
+    core: RaftCore,
     role: Role
 }
 
@@ -59,12 +65,13 @@ impl Raft {
         let (ev_ch_tx, ev_ch_rx) = tokio::sync::mpsc::unbounded_channel();
         let ev_q = EvQueue::new(ev_ch_tx);
 
-        let core = RaftCore {
+        let core = RaftCore_ {
             me,
+            dead: AtomicBool::default(),
             rpc_client,
             persister,
             apply_ch,
-            term: 0,
+            term: Default::default(),
             ev_q
         };
         let core = Arc::new(core);
@@ -135,34 +142,29 @@ impl Raft {
     }
 
     /// Kill the server.
-    pub async fn kill(&self) {}
+    pub async fn kill(&self) {
+        self.core.dead.store(true, Ordering::Release);
+    }
 }
 
 impl RaftDaemon {
     async fn run(mut self, mut ev_ch_rx: UbRx<Event>) {
         while let Some(ev) = ev_ch_rx.recv().await {
             match ev {
-                ev => match self.role.process(ev).await {
-                    None => {},
-                    Some(outcome) => match outcome {
-                        Outcome::BeCandidate => {
-                            assert!(self.role.is_follower());
-                            let cd = Candidate::new(self.core.clone());
-                            self.role = Role::Candidate(cd);
-                        },
-                        Outcome::BeLeader => {
-                            assert!(self.role.is_candidate());
-                            let ld = Leader::new(self.core.clone());
-                            self.role = Role::Leader(ld);
-                        },
-                        Outcome::BeFollower => {
-                            assert!(!self.role.is_follower());
-                            let flw = Follower::new(self.core.clone());
-                            self.role = Role::Follower(flw);
-                        }
-                    }
-                }
+                ev => self.role.process(ev).await
             }
         }
+    }
+}
+
+impl RaftCore_ {
+    #[inline]
+    pub fn dead(&self) -> bool {
+        self.dead.load(Ordering::Acquire)
+    }
+
+    #[inline]
+    pub fn term(&self) -> usize {
+        self.term.load(Ordering::Acquire)
     }
 }
