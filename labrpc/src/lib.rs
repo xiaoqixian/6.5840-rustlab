@@ -21,6 +21,8 @@ pub use service::{Service, CallResult};
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use labrpc_macros::rpc;
     use crate::{err::{self, TIMEOUT}, service::CallResult, Service};
 
@@ -30,6 +32,12 @@ mod tests {
     impl Hello {
         pub fn hello(&self, name: String) -> String {
             format!("Hello, {name}")
+        }
+
+        pub async fn no_response(&self, _: ()) {
+            // sleep a long time to simulate the situation where
+            // the service is unresponsive.
+            tokio::time::sleep(Duration::from_secs(120)).await;
         }
     }
 
@@ -124,6 +132,30 @@ mod tests {
         assert_eq!(
             Ok("Hello, Lunar".to_string()),
             clients[2].unicast::<_, String>(1, "Hello.hello", "Lunar".to_string()).await
+        );
+    }
+
+    /// When a service is not responsing for a long time, 
+    /// the network should be able to return a TIMEOUT error 
+    /// to the caller.
+    /// The network waiting time is 20 secs.
+    #[tokio::test]
+    async fn no_response_test() {
+        let mut network = crate::network::Network::new();
+        const N: usize = 2;
+
+        let mut clients = Vec::with_capacity(N);
+        for _ in 0..N {
+            let mut c = network.join_one().await;
+            c.add_service("Hello".to_string(), Box::new(Hello)).await;
+            clients.push(c);
+        }
+        
+        let client0 = &clients[0];
+
+        assert_eq!(
+            Err(TIMEOUT),
+            client0.unicast::<_, ()>(1, "Hello.no_response", ()).await
         );
     }
 }

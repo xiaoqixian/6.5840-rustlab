@@ -2,7 +2,7 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use std::{collections::HashMap, sync::{atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering}, Arc}};
+use std::{collections::HashMap, sync::{atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering}, Arc}, time::Duration};
 use tokio::sync::{mpsc as tk_mpsc, RwLock};
 
 use crate::{
@@ -19,6 +19,8 @@ pub(crate) type Peers = Arc<RwLock<HashMap<usize, ClientEnd>>>;
 pub(crate) type ServiceContainer = Arc<RwLock<HashMap<String, Box<dyn Service>>>>;
 
 type ServerTable = Arc<RwLock<Vec<Option<ServerNode>>>>;
+
+const DISPATCH_WAITING: Duration = Duration::from_secs(20);
 
 #[derive(Clone)]
 struct NetworkConfig {
@@ -230,7 +232,10 @@ impl NetworkDaemon {
             req,
             reply_tx
         } = msg;
-        let result = self.dispatch(end_id, req).await;
+        let result = tokio::select! {
+            ret = self.dispatch(end_id, req) => ret,
+            _ = tokio::time::sleep(DISPATCH_WAITING) => Err(TIMEOUT)
+        };
         reply_tx.send(result).unwrap()
     }
 
