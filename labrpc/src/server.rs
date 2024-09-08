@@ -5,7 +5,7 @@
 use crate::{
     network::ServiceContainer,
     err::CLASS_NOT_FOUND,
-    msg::RpcReq,
+    RpcReq,
     CallResult
 };
 

@@ -4,8 +4,6 @@
 
 
 pub mod network;
-pub mod msg;
-pub mod service;
 pub mod err;
 pub mod client;
 pub mod server;
@@ -17,14 +15,32 @@ type UbRx<T> = tk_mpsc::UnboundedReceiver<T>;
 type UbTx<T> = tk_mpsc::UnboundedSender<T>;
 type OneTx<T> = tokio::sync::oneshot::Sender<T>;
 
-pub use service::{Service, CallResult};
+pub type CallResult = Result<Vec<u8>, err::Error>;
+
+#[async_trait::async_trait]
+pub trait Service: Send + Sync {
+    async fn call(&self, method: &str, arg: &[u8]) -> CallResult;
+}
+
+#[derive(Clone)]
+pub(crate) struct RpcReq {
+    pub cls: String,
+    pub method: String,
+    pub arg: Vec<u8>,
+}
+
+pub(crate) struct Msg {
+    pub end_id: usize,
+    pub req: RpcReq,
+    pub reply_tx: OneTx<CallResult>
+}
 
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
     use labrpc_macros::rpc;
-    use crate::{err::{self, TIMEOUT}, service::CallResult, Service};
+    use crate::{err::{self, DISCONNECTED, TIMEOUT}, CallResult, Service};
 
     struct Hello;
 
@@ -84,7 +100,7 @@ mod tests {
             client0.unicast::<_, String>(1, "Hello.hello", 12).await
         );
 
-        let mut rx = client0.broadcast::<_, String>(
+        let (mut rx, _) = client0.broadcast::<_, String>(
             "Hello.hello", "Lunar".to_string()).await.unwrap();
         let mut rets = Vec::new();
         let get = rx.recv_many(&mut rets, 4).await;
@@ -120,7 +136,7 @@ mod tests {
         );
         // client[2] should be disabled too.
         assert_eq!(
-            Err(TIMEOUT),
+            Err(DISCONNECTED),
             clients[2].unicast::<_, String>(1, "Hello.hello", "Lunar".to_string()).await
         );
 

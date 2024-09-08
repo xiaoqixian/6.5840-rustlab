@@ -5,7 +5,10 @@
 use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
 
 use crate::{
-    err::{Error, NetworkError, PEER_NOT_FOUND, TIMEOUT}, msg::{Msg, RpcReq}, network::{Peers, ServiceContainer}, Rx, Service, UbTx
+    err::{Error, PEER_NOT_FOUND, DISCONNECTED}, 
+    Msg, RpcReq, 
+    network::{Peers, ServiceContainer}, 
+    Rx, Service, UbTx
 };
 
 use serde::{Serialize, de::DeserializeOwned};
@@ -42,20 +45,19 @@ impl ClientEnd {
     {
         let (cls, method) = {
             let mut splits = meth.split('.').into_iter();
-            let mut parse_str = || {
-                match splits.next() {
-                    None => Err(Error::NetworkError(
-                        NetworkError::MethError(
-                            format!("Invalid meth: {meth}")
-                        )
-                    )),
-                    Some(s) => Ok(String::from(s))
-                }
-            };
-
-            (parse_str()?, parse_str()?)
+            (
+                String::from(splits.next().expect(
+                    &format!("Invalid meth: {meth}")
+                )),
+                String::from(splits.next().expect(
+                    &format!("Invalid meth: {meth}")
+                )),
+            )
         };
-        let arg = bincode::serialize(&arg)?;
+        let arg = match bincode::serialize(&arg) {
+            Ok(arg) => arg,
+            Err(e) => panic!("Unexpected bincode serialization error {e:?}")
+        };
 
         Ok(RpcReq { cls, method, arg })
     }
@@ -72,7 +74,7 @@ impl ClientEnd {
         };
         self.net_tx.send(msg).unwrap();
         
-        let res_enc = rx.await??;
+        let res_enc = rx.await.unwrap()?;
         let res = bincode::deserialize_from(&res_enc[..]).unwrap();
         Ok(res)
     }
@@ -99,11 +101,16 @@ impl Client {
         self.services.write().await.insert(name, service);
     }
 
+    #[inline]
+    pub async fn size(&self) -> usize {
+        self.peers.read().await.len()
+    }
+
     pub async fn unicast<A, R>(&self, to: usize, meth: &str, arg: A) -> Result<R, Error> 
         where A: Serialize, R: DeserializeOwned
     {
         if !self.connected() {
-            return Err(TIMEOUT);
+            return Err(DISCONNECTED);
         }
 
         match self.peers.read().await.get(&to) {
@@ -117,7 +124,7 @@ impl Client {
             R: DeserializeOwned + Send + Sync + 'static
     {
         if !self.connected() {
-            return Err(TIMEOUT);
+            return Err(DISCONNECTED);
         }
 
         let (tx, rx) = tokio::sync::mpsc::channel(to.len());
@@ -142,15 +149,19 @@ impl Client {
         Ok(rx)
     }
 
-    pub async fn broadcast<A, R>(&self, meth: &str, arg: A) -> Result<Rx<Result<R, Error>>, Error> 
+    /// Broadcast a message to the cluster, return a channel to receive 
+    /// responses and the size of the cluster (so the caller can calculate
+    /// the quorum).
+    pub async fn broadcast<A, R>(&self, meth: &str, arg: A) -> Result<(Rx<Result<R, Error>>, usize), Error> 
         where A: Serialize + Clone + Send + Sync + 'static,
             R: DeserializeOwned + Send + Sync + 'static
     {
         if !self.connected() {
-            return Err(TIMEOUT);
+            return Err(DISCONNECTED);
         }
 
         let peers = self.peers.read().await;
+        let n = peers.len();
         let (tx, rx) = tokio::sync::mpsc::channel(peers.len());
         let meth = String::from(meth);
 
@@ -167,6 +178,6 @@ impl Client {
                 tx.send(res).await.unwrap();
             });
         }
-        Ok(rx)
+        Ok((rx, n))
     }
 }

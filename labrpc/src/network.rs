@@ -7,7 +7,7 @@ use tokio::sync::{mpsc as tk_mpsc, RwLock};
 
 use crate::{
     err::TIMEOUT, 
-    msg::{Msg, RpcReq}, 
+    Msg, RpcReq, 
     Service, CallResult, UbRx,
     client::{Client, ClientEnd},
     server::Server
