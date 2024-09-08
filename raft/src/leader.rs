@@ -2,18 +2,15 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use crate::{candidate::Candidate, event::Event, raft::RaftCore, role::Trans};
+use crate::{candidate::Candidate, event::Event, log::Logs, raft::RaftCore, role::Trans};
 
 pub struct Leader {
-    pub(crate) core: RaftCore,
+    pub core: RaftCore,
+    pub logs: Logs
 }
 
 impl Leader {
-    pub fn new(core: RaftCore) -> Self {
-        Self { core }
-    }
-
-    pub async fn process(&mut self, ev: Event) -> Option<Outcome> {
+    pub async fn process(&mut self, ev: Event) -> Option<Trans> {
         None
     }
 
@@ -22,10 +19,9 @@ impl Leader {
 
 impl From<Candidate> for Leader {
     fn from(cd: Candidate) -> Self {
-        let Candidate {
-            core,
-            ..
-        } = cd;
-        Self { core }
+        Self {
+            core: cd.core,
+            logs: cd.logs
+        }
     }
 }

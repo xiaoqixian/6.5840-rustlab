@@ -7,11 +7,7 @@ use std::{sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, Arc}, time::Durati
 use labrpc::client::Client;
 
 use crate::{
-    event::{EvQueue, Event}, 
-    follower::Follower, 
-    msg::ApplyMsg, 
-    persist::Persister, 
-    role::Role, UbRx, UbTx
+    event::{EvQueue, Event}, follower::Follower, log::Logs, msg::ApplyMsg, persist::Persister, role::Role, UbRx, UbTx
 };
 
 pub(crate) struct RaftCore_ {
@@ -75,8 +71,9 @@ impl Raft {
             ev_q
         };
         let core = Arc::new(core);
+        let logs = Logs::new(core.clone());
 
-        let flw = Follower::new(core.clone());
+        let flw = Follower::new(core.clone(), logs);
         let daemon = RaftDaemon {
             core: core.clone(),
             role: Role::Follower(flw)

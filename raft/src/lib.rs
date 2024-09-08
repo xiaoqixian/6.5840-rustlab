@@ -9,7 +9,7 @@ mod persist;
 mod follower;
 mod candidate;
 mod leader;
-mod utils;
+mod common;
 mod event;
 mod service;
 mod role;

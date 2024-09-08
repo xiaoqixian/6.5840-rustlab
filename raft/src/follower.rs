@@ -2,17 +2,19 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use crate::{candidate::Candidate, event::{EvQueue, Event}, leader::Leader, raft::{Raft, RaftCore}, role::Trans, utils::{self, HEARTBEAT_TIMEOUT}};
+use crate::{candidate::Candidate, event::{EvQueue, Event}, leader::Leader, log::Logs, raft::{Raft, RaftCore}, role::Trans, common::{self, HEARTBEAT_TIMEOUT}};
 
 pub struct Follower {
     pub core: RaftCore,
+    pub logs: Logs
 }
 
 impl Follower {
-    pub fn new(core: RaftCore) -> Self {
+    pub fn new(core: RaftCore, logs: Logs) -> Self {
         tokio::spawn(Self::start_timer(core.ev_q.clone()));
         Self {
             core,
+            logs
         }
     }
 
@@ -33,12 +35,18 @@ impl Follower {
 
 impl From<Candidate> for Follower {
     fn from(cd: Candidate) -> Self {
-        Self { core: cd.core }
+        Self {
+            core: cd.core,
+            logs: cd.logs
+        }
     }
 }
 
 impl From<Leader> for Follower {
     fn from(ld: Leader) -> Self {
-        Self { core: ld.core }
+        Self {
+            core: ld.core,
+            logs: ld.logs
+        }
     }
 }

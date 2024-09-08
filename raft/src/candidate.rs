@@ -6,7 +6,7 @@ use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{event::Event, follower::Follower, raft::RaftCore, role::Outcome, service::RequestVoteArgs};
+use crate::{common, event::Event, follower::Follower, log::Logs, raft::RaftCore, role::Trans, service::{RequestVoteArgs, RequestVoteReply}};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum VoteStatus {
@@ -29,27 +29,22 @@ pub enum VoteStatus {
 #[derive(Clone)]
 pub struct Candidate {
     pub core: RaftCore,
-    active: Arc<AtomicBool>
+    pub logs: Logs,
+    active: Arc<AtomicBool>,
 }
 
 impl From<Follower> for Candidate {
     fn from(flw: Follower) -> Self {
         Self {
             core: flw.core,
+            logs: flw.logs,
             active: Default::default()
         }
     }
 }
 
 impl Candidate {
-    pub fn new(core: RaftCore) -> Self {
-        Self { 
-            core,
-            active: Default::default()
-        }
-    }
-
-    pub async fn process(&mut self, ev: Event) -> Option<Outcome> {
+    pub async fn process(&mut self, ev: Event) -> Option<Trans> {
         None
     }
 
@@ -61,6 +56,18 @@ impl Candidate {
         let args = RequestVoteArgs {
             id: self.core.me,
             term: self.core.term(),
+            last_log: self.logs.last_log_info().await
+        };
+
+        // my own vote is not included
+        let mut votes = 0usize;
+        let (mut poll_ch, n) = self.core.rpc_client.broadcast::<_, RequestVoteReply>(
+            common::REQUEST_VOTE, args
+        ).await.unwrap();
+        let quorum = n / 2;
+
+        while let Some(resp) = poll_ch.recv().await {
+            
         }
     }
 }

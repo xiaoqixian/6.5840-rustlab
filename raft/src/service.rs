@@ -20,7 +20,7 @@ pub(crate) struct AppendEntriesArgs {
 #[derive(Serialize, Deserialize)]
 pub(crate) struct AppendEntriesReply {}
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct RequestVoteArgs {
     pub(crate) id: usize,
     pub(crate) term: usize,
