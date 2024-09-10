@@ -2,103 +2,71 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use std::{collections::HashMap, sync::{atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering}, Arc}, time::Duration};
+use std::sync::{
+    atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering}, 
+    Arc
+};
 use tokio::sync::{mpsc as tk_mpsc, RwLock};
 
 use crate::{
-    err::TIMEOUT, 
-    Msg, RpcReq, 
-    Service, CallResult, UbRx,
-    client::{Client, ClientEnd},
-    server::Server
+    client::Client, 
+    err::{DISCONNECTED, PEER_NOT_FOUND, TIMEOUT}, 
+    server::Server, CallResult, Idx, Key, Msg, RpcReq, UbRx
 };
 
 use super::UbTx;
 
-pub(crate) type Peers = Arc<RwLock<HashMap<usize, ClientEnd>>>;
-pub(crate) type ServiceContainer = Arc<RwLock<HashMap<String, Box<dyn Service>>>>;
+// const DISPATCH_WAITING: Duration = Duration::from_secs(20);
 
-type ServerTable = Arc<RwLock<Vec<Option<ServerNode>>>>;
-
-const DISPATCH_WAITING: Duration = Duration::from_secs(20);
-
+// The client and server id at index.
 #[derive(Clone)]
-struct NetworkConfig {
-    reliable: Arc<AtomicBool>,
-    long_delay: Arc<AtomicBool>
+struct Node {
+    key: Key,
+    connected: bool,
+    server: Server,
 }
 
-#[derive(Clone)]
+#[derive(Default)]
+struct NetworkCore {
+    nodes: Vec<RwLock<Option<Node>>>,
+    rpc_cnt: AtomicU32,
+    byte_cnt: AtomicU64,
+    reliable: AtomicBool,
+    long_delay: AtomicBool,
+}
+
 pub struct Network {
+    n: usize,
     tx: UbTx<Msg>,
-    config: NetworkConfig,
-    nodes: ServerTable,
-    peers: Peers,
-    rpc_cnt: Arc<AtomicU32>,
-    byte_cnt: Arc<AtomicU64>,
-    connected: HashMap<usize, Arc<AtomicBool>>
+    core: Arc<NetworkCore>,
+    key_src: AtomicUsize,
 }
 
 #[derive(Clone)]
 struct NetworkDaemon {
-    nodes: ServerTable,
-    config: NetworkConfig,
-    rpc_cnt: Arc<AtomicU32>,
-    byte_cnt: Arc<AtomicU64>
-}
-
-struct ServerNode {
-    server: Server,
-    connected: Arc<AtomicBool>
-}
-
-impl ServerNode {
-    #[inline]
-    fn connected(&self) -> bool {
-        self.connected.load(Ordering::Acquire)
-    }
-}
-
-impl NetworkConfig {
-    #[inline]
-    fn reliable(&self) -> bool {
-        self.reliable.load(Ordering::Acquire)
-    }
-
-    #[inline]
-    fn long_delay(&self) -> bool {
-        self.long_delay.load(Ordering::Acquire)
-    }
+    core: Arc<NetworkCore>
 }
 
 impl Network {
-    pub fn new() -> Self {
-        let config = NetworkConfig {
-            reliable: Arc::new(AtomicBool::new(true)),
-            long_delay: Default::default()
-        };
-
+    pub fn new(n: usize) -> Self {
         let (tx, rx) = tk_mpsc::unbounded_channel();
 
-        let nodes = ServerTable::default();
-        let rpc_cnt: Arc<AtomicU32> = Default::default();
-        let byte_cnt: Arc<AtomicU64> = Default::default();
+        let core = NetworkCore {
+            nodes: std::iter::repeat_with(Default::default)
+                .take(n).collect(),
+            ..Default::default()
+        };
+        let core = Arc::new(core);
 
         tokio::spawn(NetworkDaemon {
-            nodes: nodes.clone(),
-            config: config.clone(),
-            rpc_cnt: rpc_cnt.clone(),
-            byte_cnt: byte_cnt.clone()
+            core: core.clone()
         }.run(rx));
 
         Self {
+            n,
             tx,
-            config,
-            nodes,
-            peers: Default::default(),
-            rpc_cnt,
-            byte_cnt,
-            connected: Default::default()
+            core,
+            key_src: AtomicUsize::default(),
         }
     }
 
@@ -110,12 +78,12 @@ impl Network {
 
     #[inline]
     pub fn set_reliable(&self, val: bool) {
-        self.config.reliable.store(val, Ordering::Release);
+        self.core.reliable.store(val, Ordering::Release);
     }
 
     #[inline]
     pub fn set_long_delay(&self, val: bool) {
-        self.config.long_delay.store(val, Ordering::Release);
+        self.core.long_delay.store(val, Ordering::Release);
     }
 
     #[inline]
@@ -124,103 +92,42 @@ impl Network {
         self
     }
 
-    // join a old or new server, if id.is_none(), 
-    // then it's a new server.
-    async fn join(&mut self, id: Option<usize>) -> Client {
-        let services = ServiceContainer::default();
+    /// By making a client, the new client will replace the original 
+    /// one at `idx`, which expires the key and removes the original
+    /// server out of the network.
+    /// So this can be used to simulate a restart of a node.
+    pub async fn make_client(&mut self, idx: usize) -> Client {
+        assert!(idx < self.n, "Invalid index {idx}, 
+            the network group size is {}", self.n);
 
-        // let the nodes lock early released.
-        let id = {
-            let mut nodes = self.nodes.write().await;
-            let id = match id {
-                Some(id) => id,
-                None => {
-                    nodes.push(None);
-                    nodes.len() - 1
-                }
-            };
-            assert!(id < nodes.len());
-
-            nodes[id] = Some(ServerNode {
-                server: Server::new(services.clone()),
-                connected: Arc::new(AtomicBool::new(true))
-            });
-            id
-        };
-
-        let mut peers = self.peers.write().await;
-        peers.insert(id, ClientEnd::new(id, self.tx.clone()));
-
-        let connected = Arc::new(AtomicBool::new(true));
-        self.connected.insert(id, connected.clone());
-        Client::new(id, self.peers.clone(), services, connected)
-    }
-
-    #[inline]
-    pub async fn join_one(&mut self) -> Client {
-        self.join(None).await
-    }
-
-    #[inline]
-    pub async fn join_at(&mut self, id: usize) -> Client {
-        self.join(Some(id)).await
-    }
-    
-    /// Delete a server from the cluster
-    pub async fn delete_server(&mut self, id: usize) {
-        {
-            let mut peers = self.peers.write().await;
-            if let None = peers.remove(&id) {
-                panic!("Server {id} does not exist in the network");
-            }
-        }
-
-        let mut servers = self.nodes.write().await;
-        let ret = servers.get_mut(id).take();
-        assert!(ret.is_some());
-    }
-
-    pub async fn enable(&mut self, id: usize, enable: bool) {
-        let servers = self.nodes.write().await;
-        if let Some(Some(server)) = servers.get(id) {
-            server.connected.store(enable, Ordering::Release);
-        }
-
-        // disable client
-        let conn = self.connected.get(&id)
-            .expect(&format!("Expect client {id} exist"));
-        conn.store(enable, Ordering::Release);
-    }
-
-    /// Isolate a server, disconnect it from all other nodes.
-    /// But the server is still running, so it can be reconnected.
-    #[inline]
-    pub async fn disconnect(&mut self, id: usize) {
-        self.enable(id, false).await;
-    }
-
-    #[inline]
-    pub async fn connect(&mut self, id: usize) {
-        self.enable(id, true).await;
+        let key = self.key_src.fetch_add(1, Ordering::AcqRel);
+        let server = Server::default();
+        *self.core.nodes[idx].write().await = Some(Node {
+            key,
+            server: server.clone(),
+            connected: true
+        });
+        
+        Client::new(key, idx, self.n, server, self.tx.clone())
     }
 
     #[inline]
     pub fn rpc_cnt(&self) -> u32 {
-        self.rpc_cnt.load(Ordering::Acquire)
+        self.core.rpc_cnt.load(Ordering::Acquire)
     }
 
     #[inline]
     pub fn byte_cnt(&self) -> u64 {
-        self.byte_cnt.load(Ordering::Acquire)
+        self.core.byte_cnt.load(Ordering::Acquire)
     }
 }
 
 impl NetworkDaemon {
     async fn run(self, mut rx: UbRx<Msg>) {
         while let Some(msg) = rx.recv().await {
-            self.rpc_cnt.fetch_add(1, Ordering::AcqRel);
+            self.core.rpc_cnt.fetch_add(1, Ordering::AcqRel);
             let bytes = msg.req.arg.len() as u64;
-            self.byte_cnt.fetch_add(bytes, Ordering::AcqRel);
+            self.core.byte_cnt.fetch_add(bytes, Ordering::AcqRel);
 
             tokio::spawn(self.clone().process_msg(msg));
         }
@@ -228,51 +135,71 @@ impl NetworkDaemon {
 
     async fn process_msg(self, msg: Msg) {
         let Msg {
-            end_id,
+            key: msg_key,
+            from,
+            to,
             req,
             reply_tx
         } = msg;
-        let result = tokio::select! {
-            ret = self.dispatch(end_id, req) => ret,
-            _ = tokio::time::sleep(DISPATCH_WAITING) => Err(TIMEOUT)
+        
+        let from_info = match self.core.nodes.get(from) {
+            None => None,
+            Some(nd) => nd.read().await.as_ref()
+                .map(|nd| (nd.connected, nd.key))
         };
+
+        let result = match from_info {
+            None => Err(PEER_NOT_FOUND),
+            Some((from_conn, from_key)) => 
+                match (from_conn, from_key == msg_key) {
+                    (true, true) => self.dispatch(to, req).await,
+                    _ => Err(DISCONNECTED)
+                }
+        };
+
         reply_tx.send(result).unwrap()
     }
 
-    async fn dispatch(&self, end_id: usize, req: RpcReq) -> CallResult {
-        let nodes = self.nodes.read().await;
-
-        let node = match nodes.get(end_id) {
-            Some(Some(node)) if node.connected() => Some(node),
-            _ => None
+    async fn dispatch(&self, to: Idx, req: RpcReq) -> CallResult {
+        let node = match self.core.nodes.get(to) {
+            None => None,
+            Some(nd) => nd.read().await.clone()
         };
 
-        if let Some(node) = node {
-            let reliable = self.config.reliable();
-            if !reliable {
+        match node {
+            Some(node) if node.connected => {
+                let reliable = self.core.reliable.load(Ordering::Acquire);
+
                 // give a random short delay.
-                let ms = rand::random::<u64>() % 27;
+                if !reliable {
+                    let ms = rand::random::<u64>() % 27;
+                    let d = std::time::Duration::from_millis(ms);
+                    tokio::time::sleep(d).await;
+                }
+
+                // randomly discard messages in unreliable network env.
+                let discard = !reliable && rand::random::<u32>() % 1000 < 100;
+
+                if discard {
+                    Err(TIMEOUT)
+                } else {
+                    node.server.dispatch(req).await
+                }
+            },
+            _ => {
+                // simulate no reply and eventual timeout
+                let ms = rand::random::<u64>();
+                let long_delay = self.core.long_delay.load(Ordering::Acquire);
+                let ms = if long_delay {
+                    ms % 7000
+                } else {
+                    ms % 100
+                };
+
                 let d = std::time::Duration::from_millis(ms);
                 tokio::time::sleep(d).await;
-            }
-
-            if !reliable && rand::random::<u32>() % 1000 < 100 {
                 Err(TIMEOUT)
-            } else {
-                node.server.dispatch(req).await
             }
-        } else {
-            // simulate no reply and eventual timeout
-            let ms = rand::random::<u64>();
-            let ms = if self.config.long_delay() {
-                ms % 7000
-            } else {
-                ms % 100
-            };
-
-            let d = std::time::Duration::from_millis(ms);
-            tokio::time::sleep(d).await;
-            Err(TIMEOUT)
         }
     }
 }
