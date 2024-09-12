@@ -44,6 +44,8 @@ pub(crate) struct Msg {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use labrpc_macros::rpc;
     use crate::{err::{self, CLASS_NOT_FOUND}, network::Network, CallResult, Service};
 
@@ -75,7 +77,7 @@ mod tests {
             for peer in c0.peers() {
                 assert_eq!(
                     Ok("Hello, Lunar".to_string()),
-                    peer.call::<_, String>("Hello.hello", "Lunar".to_string()).await
+                    peer.call::<_, String>("Hello.hello", &"Lunar").await
                 );
                 cnt += 1;
             }
@@ -96,7 +98,7 @@ mod tests {
             let mut res = Vec::new();
             for peer in c1.peers() {
                 res.push(
-                    peer.call::<_, String>("Hello.hello", "Lunar".to_string()).await
+                    peer.call::<_, String>("Hello.hello", &"Lunar").await
                 );
             }
             assert_eq!(2, res.len());
@@ -113,5 +115,41 @@ mod tests {
             assert_eq!(1, count(&ok));
             assert_eq!(1, count(&Err(CLASS_NOT_FOUND)));
         }
+    }
+
+    #[tokio::test]
+    async fn unreliable() {
+        const N: usize = 2;
+        let mut network = Network::new(N)
+            .reliable(false)
+            .long_delay(true);
+        let mut clients = Vec::with_capacity(N);
+        for i in 0..N {
+            let cli = network.make_client(i).await;
+            cli.add_service(
+                "Hello".to_string(),
+                Box::new(Hello)
+            ).await;
+            clients.push(cli);
+        }
+        
+        // client0 request for 1000 times, 
+        // check how many responses in a unreliable environment.
+        const TRIES: usize = 1000;
+        let mut cnt = 0usize;
+        let mut rtt = 0u128;
+        let c0 = &clients[0];
+        let p1 = c0.peers().next().unwrap();
+
+        for _ in 0..TRIES {
+            let start = Instant::now();
+            let ret = p1.call::<_, String>("Hello.hello", &"Lunar".to_string())
+                .await;
+            rtt += start.elapsed().as_millis();
+            if ret.is_ok() { cnt += 1; }
+        }
+
+        println!("{} responses in {} tries", cnt, TRIES);
+        println!("Average RTT: {}ms", rtt/(TRIES as u128));
     }
 }

@@ -45,6 +45,10 @@ impl Client {
         Self { key, idx, n, server, net_tx }
     }
 
+    pub fn n(&self) -> usize {
+        self.n
+    }
+
     pub async fn add_service(&self, name: String, service: Box<dyn Service>) {
         self.server.add_service(name, service).await;
     }
@@ -85,7 +89,7 @@ impl Iterator for PeersIter {
 }
 
 impl ClientEnd {
-    fn gen_req<A>(meth: &str, arg: A) -> Result<RpcReq, Error> 
+    fn gen_req<A>(meth: &str, arg: &A) -> Result<RpcReq, Error> 
         where A: Serialize
     {
         let (cls, method) = {
@@ -99,7 +103,7 @@ impl ClientEnd {
                 )),
             )
         };
-        let arg = match bincode::serialize(&arg) {
+        let arg = match bincode::serialize(arg) {
             Ok(arg) => arg,
             Err(e) => panic!("Unexpected bincode serialization error {e:?}")
         };
@@ -107,7 +111,11 @@ impl ClientEnd {
         Ok(RpcReq { cls, method, arg })
     }
 
-    pub async fn call<A, R>(&self, meth: &str, arg: A) -> Result<R, Error> 
+    pub fn id(&self) -> Idx {
+        self.to
+    }
+
+    pub async fn call<A, R>(&self, meth: &str, arg: &A) -> Result<R, Error> 
         where A: Serialize, R: DeserializeOwned
     {
         let req = Self::gen_req(meth, arg)?;
