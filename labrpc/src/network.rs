@@ -42,11 +42,6 @@ pub struct Network {
     key_src: AtomicUsize,
 }
 
-#[derive(Clone)]
-struct NetworkDaemon {
-    core: Arc<NetworkCore>
-}
-
 impl Network {
     pub fn new(n: usize) -> Self {
         let (tx, rx) = tk_mpsc::unbounded_channel();
@@ -58,9 +53,7 @@ impl Network {
         };
         let core = Arc::new(core);
 
-        tokio::spawn(NetworkDaemon {
-            core: core.clone()
-        }.run(rx));
+        tokio::spawn(core.clone().run(rx));
 
         Self {
             n,
@@ -120,20 +113,29 @@ impl Network {
     pub fn byte_cnt(&self) -> u64 {
         self.core.byte_cnt.load(Ordering::Acquire)
     }
+
+    pub async fn connect(&self, idx: usize, conn: bool) {
+        assert!(idx < self.n, "Invalid index {idx}, 
+            the network group size is {}", self.n);
+        let mut node = self.core.nodes[idx].write().await;
+        if let Some(node) = node.as_mut() {
+            node.connected = conn;
+        }
+    }
 }
 
-impl NetworkDaemon {
-    async fn run(self, mut rx: UbRx<Msg>) {
+impl NetworkCore {
+    async fn run(self: Arc<Self>, mut rx: UbRx<Msg>) {
         while let Some(msg) = rx.recv().await {
-            self.core.rpc_cnt.fetch_add(1, Ordering::AcqRel);
+            self.rpc_cnt.fetch_add(1, Ordering::AcqRel);
             let bytes = msg.req.arg.len() as u64;
-            self.core.byte_cnt.fetch_add(bytes, Ordering::AcqRel);
+            self.byte_cnt.fetch_add(bytes, Ordering::AcqRel);
 
             tokio::spawn(self.clone().process_msg(msg));
         }
     }
 
-    async fn process_msg(self, msg: Msg) {
+    async fn process_msg(self: Arc<Self>, msg: Msg) {
         let Msg {
             key: msg_key,
             from,
@@ -142,7 +144,7 @@ impl NetworkDaemon {
             reply_tx
         } = msg;
         
-        let from_info = match self.core.nodes.get(from) {
+        let from_info = match self.nodes.get(from) {
             None => None,
             Some(nd) => nd.read().await.as_ref()
                 .map(|nd| (nd.connected, nd.key))
@@ -160,15 +162,15 @@ impl NetworkDaemon {
         reply_tx.send(result).unwrap()
     }
 
-    async fn dispatch(&self, to: Idx, req: RpcReq) -> CallResult {
-        let node = match self.core.nodes.get(to) {
+    async fn dispatch(self: Arc<Self>, to: Idx, req: RpcReq) -> CallResult {
+        let node = match self.nodes.get(to) {
             None => None,
             Some(nd) => nd.read().await.clone()
         };
 
         match node {
             Some(node) if node.connected => {
-                let reliable = self.core.reliable.load(Ordering::Acquire);
+                let reliable = self.reliable.load(Ordering::Acquire);
 
                 // give a random short delay.
                 if !reliable {
@@ -189,7 +191,7 @@ impl NetworkDaemon {
             _ => {
                 // simulate no reply and eventual timeout
                 let ms = rand::random::<u64>();
-                let long_delay = self.core.long_delay.load(Ordering::Acquire);
+                let long_delay = self.long_delay.load(Ordering::Acquire);
                 let ms = if long_delay {
                     ms % 7000
                 } else {
