@@ -6,6 +6,8 @@ use std::{ops::Range, time::Duration};
 use rand::Rng;
 
 pub const HEARTBEAT_TIMEOUT: Range<u64> = 300..400;
+pub const RPC_RETRY_WAIT: Duration = Duration::from_millis(20);
+pub const ELECTION_TIMEOUT: Range<u64> = 900..1100;
 
 pub const REQUEST_VOTE: &'static str = "RpcService.request_vote";
 pub const APPEND_ENTRIES: &'static str = "RpcService.append_entries";

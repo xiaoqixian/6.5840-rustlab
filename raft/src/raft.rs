@@ -10,17 +10,18 @@ use crate::{
     event::{EvQueue, Event}, follower::Follower, log::Logs, msg::ApplyMsg, persist::Persister, role::Role, UbRx, UbTx
 };
 
-pub(crate) struct RaftCore_ {
-    pub(crate) me: usize,
-    pub(crate) dead: AtomicBool,
-    pub(crate) rpc_client: Client,
-    pub(crate) persister: Persister,
-    pub(crate) apply_ch: UbTx<ApplyMsg>,
-    pub(crate) term: Arc<AtomicUsize>,
-    pub(crate) ev_q: EvQueue
+pub(crate) struct RaftCoreImpl {
+    pub me: usize,
+    pub dead: AtomicBool,
+    pub rpc_client: Client,
+    pub persister: Persister,
+    pub apply_ch: UbTx<ApplyMsg>,
+    pub term: AtomicUsize,
+    // ev_q is shared
+    pub ev_q: Arc<EvQueue>
 }
 
-pub(crate) type RaftCore = Arc<RaftCore_>;
+pub(crate) type RaftCore = Arc<RaftCoreImpl>;
 
 // The Raft object to implement a single raft node.
 pub struct Raft {
@@ -59,9 +60,9 @@ impl Raft {
         apply_ch: UbTx<ApplyMsg>) -> Self {
 
         let (ev_ch_tx, ev_ch_rx) = tokio::sync::mpsc::unbounded_channel();
-        let ev_q = EvQueue::new(ev_ch_tx);
+        let ev_q = Arc::new(EvQueue::new(ev_ch_tx));
 
-        let core = RaftCore_ {
+        let core = RaftCoreImpl {
             me,
             dead: AtomicBool::default(),
             rpc_client,
@@ -90,13 +91,14 @@ impl Raft {
     pub async fn get_state(&self) -> (usize, bool) {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let mut ev = Event::GetState(tx);
-        loop {
-            ev = match self.core.ev_q.put(ev).await {
-                Ok(_) => break,
-                Err(ev) => ev
-            };
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        // loop {
+        //     ev = match self.core.ev_q.put(ev).await {
+        //         Ok(_) => break,
+        //         Err(ev) => ev
+        //     };
+        //     tokio::time::sleep(Duration::from_millis(20)).await;
+        // }
+        self.core.ev_q.just_put(ev).await;
         rx.await.unwrap()
     }
 
@@ -154,7 +156,7 @@ impl RaftDaemon {
     }
 }
 
-impl RaftCore_ {
+impl RaftCoreImpl {
     #[inline]
     pub fn dead(&self) -> bool {
         self.dead.load(Ordering::Acquire)

@@ -2,7 +2,7 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use crate::{candidate::VoteStatus, event::{EvQueue, Event}, raft::RaftCore};
+use crate::{candidate::VoteStatus, event::Event, raft::RaftCore};
 use serde::{Serialize, Deserialize};
 
 #[derive(Serialize, Deserialize)]
@@ -11,26 +11,32 @@ enum Entry {
 }
 
 #[derive(Serialize, Deserialize)]
-pub(crate) struct AppendEntriesArgs {
-    pub(crate) id: usize,
-    pub(crate) term: usize,
-    pub(crate) leader_commit: usize,
-    pub(crate) entry: Entry
+pub struct AppendEntriesArgs {
+    pub id: usize,
+    pub term: usize,
+    pub leader_commit: usize,
+    pub entry: Entry
 }
 #[derive(Serialize, Deserialize)]
-pub(crate) struct AppendEntriesReply {}
+pub struct AppendEntriesReply {}
 
 #[derive(Clone, Serialize, Deserialize)]
-pub(crate) struct RequestVoteArgs {
-    pub(crate) id: usize,
-    pub(crate) term: usize,
+pub struct RequestVoteArgs {
+    pub id: usize,
+    pub term: usize,
     // the index and term of the last log
-    pub(crate) last_log: (usize, usize)
+    pub last_log: (usize, usize)
 }
 #[derive(Serialize, Deserialize)]
-pub(crate) struct RequestVoteReply {
-    id: usize,
-    vote: VoteStatus
+pub struct RequestVoteReply {
+    pub voter: usize,
+    // term represents the term of the request that 
+    // this reply response to.
+    // Without term, the receiver may confuse earlier term 
+    // responses with current term responses, and cause vote 
+    // inconsistent.
+    pub term: usize,
+    pub vote: VoteStatus
 }
 
 pub struct RpcService {
@@ -51,9 +57,7 @@ impl RpcService {
             args,
             reply_tx: tx
         };
-        self.core.ev_q.must_put(ev).await
-            .expect("Event putting failed for multiple times, which 
-                is not expected");
+        self.core.ev_q.just_put(ev).await;
         Ok(rx.await.unwrap())
     }
 
@@ -68,9 +72,7 @@ impl RpcService {
             args,
             reply_tx: tx
         };
-        self.core.ev_q.must_put(ev).await
-            .expect("Event putting failed for multiple times, which 
-                is not expected");
+        self.core.ev_q.just_put(ev).await;
         Ok(rx.await.unwrap())
     }
 }

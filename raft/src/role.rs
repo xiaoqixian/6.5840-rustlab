@@ -2,7 +2,9 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use crate::event::Event;
+use std::sync::Arc;
+
+use crate::event::{EvQueue, Event};
 use crate::follower::Follower;
 use crate::candidate::Candidate;
 use crate::leader::Leader;
@@ -22,6 +24,30 @@ pub enum Trans {
     ToCandidate,
     ToLeader,
     ToFollower
+}
+
+#[derive(Clone)]
+pub struct RoleEvQueue {
+    ev_q: Arc<EvQueue>,
+    key: usize
+}
+
+impl RoleEvQueue {
+    pub fn new(ev_q: Arc<EvQueue>, key: usize) -> Self {
+        Self { ev_q, key }
+    }
+
+    pub async fn put(&self, ev: Event) -> Result<(), Event> {
+        self.ev_q.put(ev, self.key).await
+    }
+
+    pub fn transfer(self) -> Self {
+        let key = self.ev_q.key();
+        Self {
+            ev_q: self.ev_q,
+            key
+        }
+    }
 }
 
 macro_rules! is_role {
@@ -52,7 +78,7 @@ impl Role {
 
         // The role may need to go through some role transformation.
         if let Some(trans) = trans {
-            let role = std::mem::take(self);
+            let mut role = std::mem::take(self);
             role.stop().await;
 
             *self = match (role, trans) {
