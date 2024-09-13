@@ -2,12 +2,20 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use crate::{candidate::VoteStatus, event::Event, raft::RaftCore};
+use crate::{candidate::VoteStatus, event::Event, log::LogInfo, raft::RaftCore};
 use serde::{Serialize, Deserialize};
 
 #[derive(Serialize, Deserialize)]
-enum Entry {
+pub enum Entry {
     HeartBeat
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum EntryStatus {
+    Retry,
+    Stale {
+        new_term: usize
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -17,17 +25,19 @@ pub struct AppendEntriesArgs {
     pub leader_commit: usize,
     pub entry: Entry
 }
-#[derive(Serialize, Deserialize)]
-pub struct AppendEntriesReply {}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AppendEntriesReply {
+    pub entry_status: EntryStatus
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct RequestVoteArgs {
     pub id: usize,
     pub term: usize,
     // the index and term of the last log
-    pub last_log: (usize, usize)
+    pub last_log: LogInfo
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RequestVoteReply {
     pub voter: usize,
     // term represents the term of the request that 
@@ -35,7 +45,7 @@ pub struct RequestVoteReply {
     // Without term, the receiver may confuse earlier term 
     // responses with current term responses, and cause vote 
     // inconsistent.
-    pub term: usize,
+    // pub term: usize,
     pub vote: VoteStatus
 }
 

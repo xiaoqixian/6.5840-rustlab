@@ -5,6 +5,7 @@
 use std::{sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, Arc}, time::Duration};
 
 use labrpc::client::Client;
+use tokio::sync::Mutex;
 
 use crate::{
     event::{EvQueue, Event}, follower::Follower, log::Logs, msg::ApplyMsg, persist::Persister, role::Role, UbRx, UbTx
@@ -18,7 +19,8 @@ pub(crate) struct RaftCoreImpl {
     pub apply_ch: UbTx<ApplyMsg>,
     pub term: AtomicUsize,
     // ev_q is shared
-    pub ev_q: Arc<EvQueue>
+    pub ev_q: Arc<EvQueue>,
+    pub vote_for: Mutex<Option<usize>>
 }
 
 pub(crate) type RaftCore = Arc<RaftCoreImpl>;
@@ -69,7 +71,8 @@ impl Raft {
             persister,
             apply_ch,
             term: Default::default(),
-            ev_q
+            ev_q,
+            vote_for: Default::default()
         };
         let core = Arc::new(core);
         let logs = Logs::new(core.clone());
@@ -165,5 +168,10 @@ impl RaftCoreImpl {
     #[inline]
     pub fn term(&self) -> usize {
         self.term.load(Ordering::Acquire)
+    }
+
+    #[inline]
+    pub fn set_term(&self, term: usize) {
+        self.term.store(term, Ordering::Relaxed);
     }
 }

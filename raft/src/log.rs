@@ -10,6 +10,12 @@ use tokio::sync::RwLock;
 use crate::raft::RaftCore;
 
 #[derive(Clone, Serialize, Deserialize)]
+pub struct LogInfo {
+    index: usize,
+    term: usize
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 pub enum LogType {
     Cmd(Vec<u8>),
     Noop
@@ -55,11 +61,24 @@ impl Logs {
         }))
     }
 
-    pub async fn last_log_info(&self) -> (usize, usize) {
+    pub async fn last_log_info(&self) -> LogInfo {
         self.0.logs.read().await
             .last()
-            .map(|log| (log.index, log.term))
+            .map(|log| LogInfo {
+                index: log.index,
+                term: log.term
+            })
             .expect("Logs logs should not be empty")
+    }
+
+    pub async fn up_to_date(&self, log_info: &LogInfo) -> bool {
+        let my_last = self.last_log_info().await;
+        
+        if my_last.term == log_info.term {
+            my_last.index <= log_info.index
+        } else {
+            my_last.term < log_info.term
+        }
     }
 
     #[inline]

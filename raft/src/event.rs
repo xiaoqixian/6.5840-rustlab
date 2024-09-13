@@ -2,7 +2,7 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{fmt::Display, sync::atomic::{AtomicUsize, Ordering}};
 
 use tokio::sync::RwLock;
 
@@ -25,11 +25,13 @@ pub enum Event {
         args: RequestVoteArgs,
         reply_tx: OneTx<RequestVoteReply>
     },
-    HeartBeatTimeout,
     Trans(Trans),
+
+    // follower related events
+    HeartBeatTimeout,
+
     // candidate related events
     GrantVote {
-        term: usize,
         voter: usize,
     },
     
@@ -85,19 +87,20 @@ impl EvQueue {
     pub fn key(&self) -> usize {
         self.key.load(Ordering::Acquire)
     }
+}
 
-    // Try put an event for multiple times, 
-    // return Err(()) in case of multiple failures.
-    // pub async fn must_put(&self, mut ev: Event) -> Result<(), ()> {
-    //     const WAIT: Duration = Duration::from_millis(20);
-    //     const TRIES: usize = 10;
-    //     for _ in 0..TRIES {
-    //         ev = match self.put(ev).await {
-    //             Ok(_) => return Ok(()),
-    //             Err(ev) => ev
-    //         };
-    //         tokio::time::sleep(WAIT).await;
-    //     }
-    //     Err(())
-    // }
+impl Display for Event {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Event::")?;
+        match self {
+            Self::GetState(_) => write!(f, "GetState"),
+            Self::AppendEntries {..} => write!(f, "AppendEntries"),
+            Self::RequestVote {..} => write!(f, "RequestVote"),
+            Self::Trans(to) => write!(f, "Trans({to:?})"),
+            Self::HeartBeatTimeout => write!(f, "HeartBeatTimeout"),
+            Self::GrantVote {..} => write!(f, "GrantVote"),
+            Self::OutdateCandidate {..} => write!(f, "OutdateCandidate"),
+            Self::ElectionTimeout => write!(f, "ElectionTimeout")
+        }
+    }
 }
