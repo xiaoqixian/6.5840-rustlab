@@ -2,6 +2,7 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use crate::event::{EvQueue, Event};
@@ -23,7 +24,9 @@ pub enum Role {
 pub enum Trans {
     ToCandidate,
     ToLeader,
-    ToFollower
+    ToFollower {
+        new_term: Option<usize>
+    }
 }
 
 #[derive(Clone)]
@@ -81,17 +84,28 @@ impl Role {
             let mut role = std::mem::take(self);
             role.stop().await;
 
+            // only the follower can change the term by itself, 
+            // candidate and leader cannot change the term, the 
+            // only time they need to change the term is when 
+            // they need to become a follower.
             *self = match (role, trans) {
                 (Self::Follower(flw), Trans::ToCandidate) => {
+                    flw.core.term.fetch_add(1, Ordering::AcqRel);
                     Self::Candidate(Candidate::from(flw))
                 },
                 (Self::Candidate(cd), Trans::ToLeader) => {
                     Self::Leader(Leader::from(cd))
                 },
-                (Self::Candidate(cd), Trans::ToFollower) => {
+                (Self::Candidate(cd), Trans::ToFollower {new_term}) => {
+                    if let Some(new_term) = new_term {
+                        cd.core.set_term(new_term);
+                    }
                     Self::Follower(Follower::from(cd))
                 },
-                (Self::Leader(ld), Trans::ToFollower) => {
+                (Self::Leader(ld), Trans::ToFollower {new_term}) => {
+                    if let Some(new_term) = new_term {
+                        ld.core.set_term(new_term);
+                    }
                     Self::Follower(Follower::from(ld))
                 },
                 (r, t) => panic!("Unexpected combination of 

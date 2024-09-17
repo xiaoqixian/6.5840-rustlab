@@ -10,6 +10,28 @@ use std::{collections::HashMap, ops::DerefMut, sync::{atomic::{AtomicBool, Order
 use labrpc::network::Network;
 use tokio::sync::{Mutex, RwLock};
 use crate::{msg::{ApplyMsg, Command}, persist::Persister, raft::Raft, UbRx};
+use colored::Colorize;
+
+macro_rules! fatal {
+    ($($args: expr),*) => {{
+        let msg = format!($($args),*).red();
+        panic!("{msg}");
+    }}
+}
+
+macro_rules! greet {
+    ($($args: expr),*) => {{
+        let msg = format!($($args),*).truecolor(178,225,167);
+        println!("{msg}");
+    }}
+}
+
+// macro_rules! warn {
+//     ($($args: expr),*) => {{
+//         let msg = format!($($args),*).truecolor(255,175,0);
+//         println!("{msg}");
+//     }}
+// }
 
 struct Node {
     last_applied: usize,
@@ -50,19 +72,19 @@ impl Tester {
         let config = Config {
             n,
             bytes: 0,
-            net: Network::new().reliable(reliable).long_delay(true),
+            net: Network::new(n).reliable(reliable).long_delay(true),
             logs: Arc::new(Mutex::new(Logs {
                 logs: vec![Vec::new(); n],
                 max_cmd_indx: 0
             })),
-            nodes: (0..n).into_iter()
-                .map(|_| Node {
+            nodes: std::iter::repeat_with(
+                || Node {
                     last_applied: 0,
                     persister: Persister::default(),
                     raft: None,
                     connected: true
-                })
-                .collect(),
+                }
+            ).take(n).collect(),
             start: std::time::Instant::now()
         };
         
@@ -90,7 +112,7 @@ impl Tester {
         tokio::spawn(async move {
             tokio::time::sleep(time_limit).await;
             if !finished.load(Ordering::Acquire) {
-                panic!("{msg}");
+                fatal!("{msg}");
             }
         });
     }
@@ -104,8 +126,8 @@ impl Tester {
         let nbytes = config.net.byte_cnt();
         let ncmd = config.logs.lock().await.max_cmd_indx;
         
-        println!(" ... Passed --");
-        println!(" {}ms, {} peers, {} rpc, {} bytes, {} cmds", 
+        greet!(" ... Passed --");
+        greet!(" {}ms, {} peers, {} rpc, {} bytes, {} cmds", 
             t.as_millis(), config.n, nrpc, nbytes, ncmd);
     }
 
@@ -124,11 +146,11 @@ impl Tester {
             self.ingest_snapshot(id, snapshot, None).await;
         }
 
-        let client = net.join_one().await;
+        let client = net.make_client(id).await;
         let persister = node.persister.clone().await;
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let raft = Raft::new(client, id, persister, tx);
+        let raft = Raft::new(client, id, persister, tx).await;
         
         node.raft = Some(raft);
         
@@ -179,7 +201,7 @@ impl Tester {
                     
                     if is_leader {
                         if leader_terms.get(&term).is_some() {
-                            panic!("Term {term} has multiple leaders");
+                            fatal!("Term {term} has multiple leaders");
                         }
                         leader_terms.insert(term, id);
                     }
@@ -191,7 +213,7 @@ impl Tester {
                 return max.1;
             }
         }
-        panic!("Expect one leader, got none");
+        fatal!("Expect one leader, got none");
     }
 
     /// Check if all nodes agree on their terms, 
@@ -205,7 +227,7 @@ impl Tester {
                 let (iterm, _) = raft.get_state().await;
                 term = match term {
                     Some(term) if term == iterm => Some(term),
-                    Some(term) => panic!("Servers {id} with term {iterm} disagree on term {term}"),
+                    Some(term) => fatal!("Servers {id} with term {iterm} disagree on term {term}"),
                     None => Some(iterm)
                 };
             }
@@ -224,8 +246,8 @@ impl Tester {
             let (_, is_leader) = node.raft.as_ref()
                 .unwrap().get_state().await;
             if is_leader {
-                panic!("Expected no leader among connected servers, 
-                    but {id} claims to be a leader");
+                fatal!("Expected no leader among connected servers, 
+                    but node {id} claims to be a leader");
             }
         }
     }
@@ -237,7 +259,7 @@ impl Tester {
     async fn enable(&self, id: usize, enable: bool) {
         let mut config = self.config.write().await;
         config.nodes[id as usize].connected = enable;
-        config.net.enable(id, enable).await;
+        config.net.connect(id, enable).await;
     }
 
     #[inline]
@@ -254,11 +276,11 @@ impl Applier {
     async fn run(mut self, snap: bool) {
         while let Some(msg) = self.apply_ch.recv().await {
             match msg {
-                ApplyMsg::Command(cmd) => {
+                ApplyMsg::Command(_cmd) => {
                     
                 },
-                ApplyMsg::Snapshot(snapshot) if snap => {},
-                _ => panic!("Snapshot unexpected")
+                ApplyMsg::Snapshot(_snapshot) if snap => {},
+                _ => fatal!("Snapshot unexpected")
             }
         }
     }
@@ -274,14 +296,14 @@ impl Applier {
         let logs = &mut logs_ctrl.logs;
 
         if cmd.index > logs[id as usize].len() {
-            panic!("server {id} apply out of order {}", cmd.index);
+            fatal!("server {id} apply out of order {}", cmd.index);
         }
 
         for i in 0..logs.len() {
             let log = &logs[i];
             match log.get(cmd.index) {
                 Some(&val) if val != cmd_value => {
-                    panic!("commit index = {} server={} {} != server={} {}",
+                    fatal!("commit index = {} server={} {} != server={} {}",
                         cmd.index, 
                         id, cmd_value,
                         i, val);

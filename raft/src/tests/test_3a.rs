@@ -3,14 +3,31 @@
 // Author: https://github.com/xiaoqixian
 
 use std::time::Duration;
+
 use super::Tester;
 
 const ELECTION_TIMEOUT: Duration = Duration::from_secs(1);
 
 const TIME_LIMIT: Duration = Duration::from_secs(120);
 
+use colored::Colorize;
+macro_rules! warn {
+    ($($args: expr),*) => {{
+        let msg = format_args!($($args),*);
+        let msg = format!("WARNING: {msg}").truecolor(255,175,0);
+        println!("{msg}");
+    }}
+}
+macro_rules! debug {
+    ($($args: expr),*) => {{
+        let msg = format!($($args),*);
+        let msg = format!("DEBUG: {msg}").truecolor(240, 191, 79);
+        println!("{msg}");
+    }}
+}
+
 #[tokio::test]
-async fn test_3a_initial_election() {
+async fn test3a_initial_election() {
     const N: usize = 3;
     const RELIABLE: bool = false;
     const SNAPSHOT: bool = false;
@@ -26,7 +43,7 @@ async fn test_3a_initial_election() {
     let term2 = tester.check_terms().await;
 
     if term1 != term2 {
-        println!("Warning: term changed even though there are no failures");
+        warn!("Warning: term changed even though there are no failures");
     }
 
     tester.check_one_leader().await;
@@ -34,7 +51,7 @@ async fn test_3a_initial_election() {
 }
 
 #[tokio::test]
-async fn test_3a_reelection() {
+async fn test3a_reelection() {
     const N: usize = 3;
     const RELIABLE: bool = false;
     const SNAPSHOT: bool = false;
@@ -67,7 +84,7 @@ async fn test_3a_reelection() {
 }
 
 #[tokio::test]
-async fn test_3a_many_election() {
+async fn test3a_many_election() {
     const N: usize = 7;
     const RELIABLE: bool = false;
     const SNAPSHOT: bool = false;
@@ -77,17 +94,20 @@ async fn test_3a_many_election() {
 
     tester.check_one_leader().await;
 
-    for _ in 0..10 {
+    for i in 0..10 {
+        debug!("===== Round {i} ======");
         let i1 = rand::random::<usize>() % N;
         let i2 = rand::random::<usize>() % N;
         let i3 = rand::random::<usize>() % N;
+        debug!("-- disconnected {i1}, {i2}, {i2}");
         tester.disconnect(i1).await;
         tester.disconnect(i2).await;
         tester.disconnect(i3).await;
 
         // either the current leader should be alive, 
         // or the remaing four should elect a new one.
-        tester.check_one_leader().await;
+        let leader = tester.check_one_leader().await;
+        debug!("Round {i} leader = {leader}");
 
         tester.connect(i1).await;
         tester.connect(i2).await;

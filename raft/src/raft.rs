@@ -8,7 +8,7 @@ use labrpc::client::Client;
 use tokio::sync::Mutex;
 
 use crate::{
-    event::{EvQueue, Event}, follower::Follower, log::Logs, msg::ApplyMsg, persist::Persister, role::Role, UbRx, UbTx
+    event::{EvQueue, Event}, follower::Follower, info, log::Logs, msg::ApplyMsg, persist::Persister, role::Role, service::RpcService, UbRx, UbTx
 };
 
 pub(crate) struct RaftCoreImpl {
@@ -28,11 +28,6 @@ pub(crate) type RaftCore = Arc<RaftCoreImpl>;
 // The Raft object to implement a single raft node.
 pub struct Raft {
     core: RaftCore,
-}
-
-struct RaftDaemon {
-    core: RaftCore,
-    role: Role
 }
 
 /// Raft implementation.
@@ -58,11 +53,11 @@ impl Raft {
     ///
     /// `apply_ch` is a channel on which the tester or service expects Raft 
     /// to send ApplyMsg message.
-    pub fn new(rpc_client: Client, me: usize, persister: Persister, 
+    pub async fn new(rpc_client: Client, me: usize, persister: Persister, 
         apply_ch: UbTx<ApplyMsg>) -> Self {
 
         let (ev_ch_tx, ev_ch_rx) = tokio::sync::mpsc::unbounded_channel();
-        let ev_q = Arc::new(EvQueue::new(ev_ch_tx));
+        let ev_q = Arc::new(EvQueue::new(ev_ch_tx, me));
 
         let core = RaftCoreImpl {
             me,
@@ -77,12 +72,13 @@ impl Raft {
         let core = Arc::new(core);
         let logs = Logs::new(core.clone());
 
+        core.rpc_client.add_service("RpcService".to_string(), 
+            Box::new(RpcService::new(core.clone()))).await;
+
         let flw = Follower::new(core.clone(), logs);
-        let daemon = RaftDaemon {
-            core: core.clone(),
-            role: Role::Follower(flw)
-        };
-        tokio::spawn(daemon.run(ev_ch_rx));
+        tokio::spawn(Self::process_ev(Role::Follower(flw), ev_ch_rx));
+
+        info!("Raft instance {me} started.");
 
         Self {
             core,
@@ -93,14 +89,7 @@ impl Raft {
     /// return the server's term and if itself believes it's a leader.
     pub async fn get_state(&self) -> (usize, bool) {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let mut ev = Event::GetState(tx);
-        // loop {
-        //     ev = match self.core.ev_q.put(ev).await {
-        //         Ok(_) => break,
-        //         Err(ev) => ev
-        //     };
-        //     tokio::time::sleep(Duration::from_millis(20)).await;
-        // }
+        let ev = Event::GetState(tx);
         self.core.ev_q.just_put(ev).await;
         rx.await.unwrap()
     }
@@ -117,7 +106,7 @@ impl Raft {
     }
 
     /// Read data from a byte buffer to restore Raft server state.
-    pub async fn read_persist(&mut self, bytes: &[u8]) {
+    pub async fn read_persist(&mut self, _bytes: &[u8]) {
         // read Data from bytes
         // Example:
         // let data: Data = bincode::deserilize_from(&bytes).unwrap();
@@ -130,7 +119,7 @@ impl Raft {
     /// all info up to and including index. this means the
     /// service no longer needs the log through (and including)
     /// that index. Raft should now trim its log as much as possible.
-    pub async fn snapshot(&self, index: usize, snapshot: Vec<u8>) {
+    pub async fn snapshot(&self, _index: usize, _snapshot: Vec<u8>) {
 
     }
 
@@ -139,7 +128,7 @@ impl Raft {
     /// Some((A, B)), where A is the index that the command will appear
     /// at if it's ever committed, B is the current term.
     /// If it does not, it should just return None.
-    pub async fn start(&mut self, command: Vec<u8>) -> Option<(usize, usize)> {
+    pub async fn start(&mut self, _command: Vec<u8>) -> Option<(usize, usize)> {
         None
     }
 
@@ -147,15 +136,22 @@ impl Raft {
     pub async fn kill(&self) {
         self.core.dead.store(true, Ordering::Release);
     }
+
+    async fn process_ev(mut role: Role, mut ev_ch_rx: UbRx<Event>) {
+        while let Some(ev) = ev_ch_rx.recv().await {
+            role.process(ev).await;
+        }
+    }
 }
 
-impl RaftDaemon {
-    async fn run(mut self, mut ev_ch_rx: UbRx<Event>) {
-        while let Some(ev) = ev_ch_rx.recv().await {
-            match ev {
-                ev => self.role.process(ev).await
-            }
-        }
+impl std::fmt::Display for Raft {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Raft {}", self.core.me)
+    }
+}
+impl std::fmt::Display for RaftCoreImpl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Raft {}", self.me)
     }
 }
 
@@ -175,3 +171,4 @@ impl RaftCoreImpl {
         self.term.store(term, Ordering::Relaxed);
     }
 }
+

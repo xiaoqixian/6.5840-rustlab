@@ -11,3 +11,11 @@ labrpc-macros = { version = "0.1.0", path = "../labrpc-macros" }
 rand = "0.8.5"
 serde = { version = "1.0.208", features = ["default", "derive"] }
 tokio = { version = "1.39.2", features = ["full"] }
+colored = "2.1.0"
+
+[features]
+default = ["info"]
+info = ["warn"]
+warn = ["error"]
+error = []
+no_debug = []

@@ -8,12 +8,14 @@ use tokio::sync::RwLock;
 
 use crate::{
     role::Trans, service::{
-        AppendEntriesArgs, 
-        AppendEntriesReply, 
-        RequestVoteArgs, 
-        RequestVoteReply
-    }, OneTx, UbTx
+        AppendEntriesArgs, AppendEntriesReply, 
+        QueryEntryArgs, QueryEntryReply, 
+        RequestVoteArgs, RequestVoteReply
+    }, warn, OneTx, UbTx
 };
+
+pub const TO_CANDIDATE: Event = Event::Trans(Trans::ToCandidate);
+pub const TO_LEADER: Event = Event::Trans(Trans::ToLeader);
 
 pub enum Event {
     GetState(OneTx<(usize, bool)>),
@@ -24,6 +26,10 @@ pub enum Event {
     RequestVote {
         args: RequestVoteArgs,
         reply_tx: OneTx<RequestVoteReply>
+    },
+    QueryEntry {
+        args: QueryEntryArgs,
+        reply_tx: OneTx<QueryEntryReply>
     },
     Trans(Trans),
 
@@ -44,14 +50,16 @@ pub enum Event {
 
 pub struct EvQueue {
     ev_ch: RwLock<UbTx<Event>>,
-    key: AtomicUsize
+    key: AtomicUsize,
+    id: usize
 }
 
 impl EvQueue {
-    pub fn new(ev_ch: UbTx<Event>) -> Self {
+    pub fn new(ev_ch: UbTx<Event>, id: usize) -> Self {
         Self {
             ev_ch: RwLock::new(ev_ch),
-            key: AtomicUsize::new(0)
+            key: AtomicUsize::new(0),
+            id
         }
     }
 
@@ -67,6 +75,7 @@ impl EvQueue {
     pub async fn put(&self, ev: Event, key: usize) -> Result<(), Event> {
         // reject events with unmatched key
         if self.key.load(Ordering::Acquire) != key {
+            warn!("{self}: Discard event {ev} for unmatched key");
             return Err(ev);
         }
 
@@ -96,11 +105,18 @@ impl Display for Event {
             Self::GetState(_) => write!(f, "GetState"),
             Self::AppendEntries {..} => write!(f, "AppendEntries"),
             Self::RequestVote {..} => write!(f, "RequestVote"),
+            Self::QueryEntry {..} => write!(f, "QueryEntry"),
             Self::Trans(to) => write!(f, "Trans({to:?})"),
             Self::HeartBeatTimeout => write!(f, "HeartBeatTimeout"),
             Self::GrantVote {..} => write!(f, "GrantVote"),
             Self::OutdateCandidate {..} => write!(f, "OutdateCandidate"),
             Self::ElectionTimeout => write!(f, "ElectionTimeout")
         }
+    }
+}
+
+impl Display for EvQueue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Raft {}", self.id)
     }
 }
