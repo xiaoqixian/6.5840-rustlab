@@ -111,7 +111,7 @@ impl ClientEnd {
         Ok(RpcReq { cls, method, arg })
     }
 
-    pub fn id(&self) -> Idx {
+    pub fn to(&self) -> Idx {
         self.to
     }
 
@@ -130,7 +130,7 @@ impl ClientEnd {
         self.net_tx.send(msg).unwrap();
         
         let res_enc = rx.await.unwrap()?;
-        let res = bincode::deserialize_from(&res_enc[..]).unwrap();
+        let res: R = bincode::deserialize(&res_enc[..]).unwrap();
         Ok(res)
     }
 }
