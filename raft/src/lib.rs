@@ -14,6 +14,7 @@ mod event;
 mod service;
 mod role;
 mod log;
+mod utils;
 
 type UbTx<T> = tokio::sync::mpsc::UnboundedSender<T>;
 type UbRx<T> = tokio::sync::mpsc::UnboundedReceiver<T>;

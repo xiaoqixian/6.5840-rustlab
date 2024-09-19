@@ -4,9 +4,7 @@
 
 use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
 
-use labrpc::{client::ClientEnd, err::DISCONNECTED};
-
-use crate::{candidate::{Candidate, VoteStatus}, common::{self, RpcRetry, DISCONNECT_RETRY}, event::Event, info, log::{LogInfo, LogPack, Logs}, raft::RaftCore, role::{RoleEvQueue, Trans}, service::{AppendEntriesArgs, AppendEntriesReply, AppendEntriesRes, AppendEntriesType, EntryStatus, QueryEntryArgs, QueryEntryReply, QueryEntryRes, RequestVoteArgs, RequestVoteReply}, OneTx};
+use crate::{candidate::{Candidate, VoteStatus}, common::{self, RpcRetry, RPC_FAIL_RETRY}, event::Event, info, log::{LogInfo, LogPack, Logs}, raft::RaftCore, role::{RoleEvQueue, Trans}, service::{AppendEntriesArgs, AppendEntriesReply, AppendEntriesRes, AppendEntriesType, EntryStatus, QueryEntryArgs, QueryEntryReply, QueryEntryRes, RequestVoteArgs, RequestVoteReply}, utils::Peer, OneTx};
 
 pub struct Leader {
     pub core: RaftCore,
@@ -19,7 +17,7 @@ struct Replicator {
     core: RaftCore,
     logs: Logs,
     active: Arc<AtomicBool>,
-    peer: ClientEnd,
+    peer: Peer,
     ev_q: RoleEvQueue,
     next_index: usize
 }
@@ -45,7 +43,8 @@ impl Replicator {
                 
                 let reply = match self.peer.try_call::<_, QueryEntryReply, ()>(
                     common::QUERY_ENTRY,
-                    &args
+                    &args,
+                    RPC_FAIL_RETRY
                 ).await {
                     None => {
                         tokio::time::sleep(common::NET_FAIL_WAIT).await;
@@ -76,18 +75,28 @@ impl Replicator {
     }
 
     async fn start(mut self) {
+        self.match_index().await;
+        info!("{self}: find index {}", self.next_index);
+
         let mut hb_ticker = tokio::time::interval(common::HEARTBEAT_INTERVAL);
 
         'repl: while self.active.load(Ordering::Acquire) {
             hb_ticker.tick().await;
 
-            let entry_type = self.logs.repl_get(self.next_index).await;
-            match &entry_type {
-                AppendEntriesType::Entries {entries, ..} => {
-                    self.next_index = entries.last().unwrap().index;
-                },
-                AppendEntriesType::HeartBeat => {}
-            }
+            let (entry_type, next_next_index) = match 
+                self.logs.repl_get(self.next_index).await {
+                None => (AppendEntriesType::HeartBeat, self.next_index),
+                Some((prev, entries)) => {
+                    let next_next_index = entries.last().unwrap().index;
+                    (
+                        AppendEntriesType::Entries {
+                            prev,
+                            entries
+                        },
+                        next_next_index
+                    )
+                }
+            };
 
             let args = AppendEntriesArgs {
                 id: self.core.me,
@@ -95,33 +104,25 @@ impl Replicator {
                 entry_type
             };
 
-            let reply = self.peer.call::<_, AppendEntriesRes>(
+            // keep_call may take very long
+            let reply = self.peer.call::<_, AppendEntriesReply, ()>(
                 common::APPEND_ENTRIES,
                 &args
-            ).await;
+            ).await.unwrap();
             
-            let reply = match reply {
-                Ok(Ok(reply)) => Some(reply),
-                Err(DISCONNECTED) => {
-                    tokio::time::sleep(DISCONNECT_RETRY).await;
-                    None
+            match reply.entry_status {
+                EntryStatus::Stale { term } => {
+                    if term > self.core.term() {
+                        let _ = self.ev_q.put(Event::Trans(Trans::ToFollower {
+                            new_term: Some(term)
+                        })).await;
+                        break 'repl;
+                    }
                 },
-                _ => None
-            };
-
-            if let Some(reply) = reply {
-                match reply.entry_status {
-                    EntryStatus::Stale { term } => {
-                        if term > self.core.term() {
-                            let _ = self.ev_q.put(Event::Trans(Trans::ToFollower {
-                                new_term: Some(term)
-                            })).await;
-                            break 'repl;
-                        }
-                    },
-                    // TODO: reply processing
-                    _ => {}
-                }
+                EntryStatus::Confirmed => {
+                    self.next_index = next_next_index;
+                },
+                EntryStatus::Retry => {}
             }
         }
     }
@@ -137,7 +138,7 @@ impl Leader {
                 core: core.clone(),
                 logs: logs.clone(),
                 active: active.clone(),
-                peer,
+                peer: Peer::new(peer, active.clone()),
                 ev_q: ev_q.clone(),
                 // next_index init value does not matter, it will be 
                 // re-assigned soon.
@@ -246,5 +247,11 @@ impl From<Candidate> for Leader {
 impl std::fmt::Display for Leader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Leader[{}, term={}]", self.core.me, self.core.term())
+    }
+}
+
+impl std::fmt::Display for Replicator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Repl[{}->{}]", self.core.me, self.peer.to())
     }
 }

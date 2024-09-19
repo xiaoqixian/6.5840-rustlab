@@ -128,23 +128,30 @@ impl LogsImpl {
         }
     }
 
-    /// A service provide for replicators
-    pub async fn repl_get(&self, next_index: usize) -> AppendEntriesType {
+    /// Called by replicators, given a next_index, if the latest log 
+    /// index is greater than next_index, then there are some new logs,
+    /// return Some((prev, entries)) if there are new logs, where prev is 
+    /// the log info in the previous pos of next_index, entries is a list 
+    /// of entries in range [next_index, lli].
+    /// return None if there are no new logs.
+    pub async fn repl_get(&self, next_index: usize) -> Option<(LogInfo, Vec<LogEntry>)> {
         let logs = self.logs.read().await;
         let lli = logs.last()
             .map(|entry| entry.index)
             .expect(Self::EMPTY_LOGS);
         
         assert!(((logs.offset+1)..=lli).contains(&next_index));
+
         if next_index == lli {
-            AppendEntriesType::HeartBeat
+            None
+            // AppendEntriesType::HeartBeat
         } else {
-            AppendEntriesType::Entries {
-                prev: logs.get(next_index-1)
+            Some((
+                logs.get(next_index-1)
                     .map(LogInfo::from)
                     .expect(&format!("Invalid next_index {next_index}")),
-                entries: logs.logs.get(next_index..).unwrap().to_vec()
-            }
+                logs.logs.get(next_index..).unwrap().to_vec()
+            ))
         }
     }
 
