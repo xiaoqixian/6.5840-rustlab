@@ -32,19 +32,19 @@ pub enum EntryStatus {
 
 #[derive(Serialize, Deserialize)]
 pub struct AppendEntriesArgs {
-    pub id: usize,
+    pub from: usize,
     pub term: usize,
     pub entry_type: AppendEntriesType
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AppendEntriesReply {
-    pub id: usize,
+    pub from: usize,
     pub entry_status: EntryStatus
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct RequestVoteArgs {
-    pub id: usize,
+    pub from: usize,
     pub term: usize,
     // the index and term of the last log
     pub last_log: LogInfo
@@ -65,13 +65,10 @@ pub struct RequestVoteReply {
 pub struct QueryEntryArgs {
     pub log_info: LogInfo
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum QueryEntryReply {
     Exist,
     NotExist,
-    Stale {
-        new_term: usize
-    }
 }
 pub type QueryEntryRes = Result<QueryEntryReply, ()>;
 

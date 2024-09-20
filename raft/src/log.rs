@@ -51,7 +51,7 @@ struct LogList {
     offset: usize
 }
 
-struct LogsImpl {
+pub struct LogsImpl {
     // last log index
     // lli: Arc<AtomicUsize>,
     // last committed log index
@@ -106,16 +106,26 @@ impl LogsImpl {
         Vec<LogEntry>) -> Result<(), Vec<LogEntry>> 
     {
         let mut log_list = self.logs.write().await;
-        let my_last_index = log_list.logs.last().map(|entry| entry.index)
+        let lli = log_list.logs.last().map(|entry| entry.index)
             .expect(Self::EMPTY_LOGS);
 
-        if prev_entry_info.index < my_last_index {
+        if prev_entry_info.index < lli {
             let _ = log_list.logs.drain(prev_entry_info.index..);
             log_list.extend(entries);
             Ok(())
         } else {
             Err(entries)
         }
+    }
+
+    pub async fn ld_push_noop(&self, term: usize) {
+        let mut logs = self.logs.write().await;
+        let lli = logs.last().unwrap().index;
+        logs.push(LogEntry {
+            index: lli + 1,
+            term,
+            log_type: LogType::Noop
+        });
     }
 
     pub async fn up_to_date(&self, log_info: &LogInfo) -> bool {
@@ -176,6 +186,18 @@ impl LogsImpl {
         }
     }
 
+    pub async fn log_exist(&self, log_info: &LogInfo) -> bool {
+        let logs = self.logs.read().await;
+        if log_info.index < logs.offset {
+            true
+        } else {
+            match logs.get(log_info.index) {
+                None => false,
+                Some(l) => l.term == log_info.term
+            }
+        }
+    }
+
     // #[inline]
     // pub fn lli(&self) -> usize {
     //     self.lli.load(Ordering::Acquire)
@@ -224,5 +246,11 @@ impl From<&LogEntry> for LogInfo {
             index: entry.index,
             term: entry.term
         }
+    }
+}
+
+impl std::fmt::Display for LogInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "({}, {})", self.index, self.term)
     }
 }

@@ -8,7 +8,7 @@ use labrpc::client::Client;
 use tokio::sync::Mutex;
 
 use crate::{
-    event::{EvQueue, Event}, follower::Follower, info, log::Logs, msg::ApplyMsg, persist::Persister, role::Role, service::RpcService, UbRx, UbTx
+    event::{EvQueue, Event}, follower::Follower, info, log::{Logs, LogsImpl}, msg::ApplyMsg, persist::Persister, role::Role, service::RpcService, UbRx, UbTx
 };
 
 pub(crate) struct RaftCoreImpl {
@@ -70,7 +70,7 @@ impl Raft {
             vote_for: Default::default()
         };
         let core = Arc::new(core);
-        let logs = Logs::new(core.clone());
+        let logs = LogsImpl::new(core.clone());
 
         core.rpc_client.add_service("RpcService".to_string(), 
             Box::new(RpcService::new(core.clone()))).await;

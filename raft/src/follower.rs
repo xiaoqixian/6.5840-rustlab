@@ -5,7 +5,7 @@
 use std::{sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, Arc}, time::Duration};
 
 use crate::{
-    candidate::{Candidate, VoteStatus}, common, event::{Event, TO_CANDIDATE}, info, leader::Leader, log::Logs, raft::RaftCore, role::{RoleEvQueue, Trans}, service::{AppendEntriesArgs, AppendEntriesReply, EntryStatus, RequestVoteArgs, RequestVoteReply}, warn, OneTx
+    candidate::{Candidate, VoteStatus}, common, event::{Event, TO_CANDIDATE}, info, leader::Leader, log::Logs, raft::RaftCore, role::{RoleEvQueue, Trans}, service::{AppendEntriesArgs, AppendEntriesReply, EntryStatus, QueryEntryArgs, QueryEntryReply, RequestVoteArgs, RequestVoteReply}, warn, OneTx
 };
 
 struct Timer {
@@ -49,13 +49,17 @@ impl Follower {
             },
 
             Event::AppendEntries {args, reply_tx} => {
-                info!("{}: AppendEntries from {}, term={}", self, args.id, args.term);
+                info!("{self}: AppendEntries from {}, term={}", args.from, args.term);
                 self.append_entries(args, reply_tx).await;
             },
             Event::RequestVote {args, reply_tx} => {
-                info!("{}: RequestVote from {}, term={}", self, args.id, args.term);
+                info!("{self}: RequestVote from {}, term={}", args.from, args.term);
                 self.request_vote(args, reply_tx).await;
             },
+            Event::QueryEntry {args, reply_tx} => {
+                info!("{self}: QueryEntry, log_info = {}", args.log_info);
+                self.query_entry(args, reply_tx).await;
+            }
 
             // follower related events
             Event::HeartBeatTimeout => {
@@ -89,7 +93,7 @@ impl Follower {
             EntryStatus::Confirmed
         };
         let reply = AppendEntriesReply {
-            id: self.core.me,
+            from: self.core.me,
             entry_status
         };
 
@@ -103,7 +107,7 @@ impl Follower {
 
         let vote = if args.term <= myterm {
             match self.core.vote_for.lock().await.clone() {
-                Some(vote_for) if vote_for == args.id => {
+                Some(vote_for) if vote_for == args.from => {
                     VoteStatus::Granted
                 },
                 _ => VoteStatus::Rejected { term: myterm }
@@ -111,7 +115,7 @@ impl Follower {
         } else {
             self.core.set_term(args.term);
             if self.logs.up_to_date(&args.last_log).await {
-                *self.core.vote_for.lock().await = Some(args.id);
+                *self.core.vote_for.lock().await = Some(args.from);
                 self.heartbeat_timer.clone().restart();
                 VoteStatus::Granted
             } else {
@@ -123,6 +127,13 @@ impl Follower {
             voter: self.core.me,
             vote
         };
+        reply_tx.send(reply).unwrap();
+    }
+
+    async fn query_entry(&self, args: QueryEntryArgs, reply_tx: OneTx<QueryEntryReply>) {
+        let reply = if self.logs.log_exist(&args.log_info).await {
+            QueryEntryReply::Exist
+        } else { QueryEntryReply::NotExist };
         reply_tx.send(reply).unwrap();
     }
 }

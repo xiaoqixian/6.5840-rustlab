@@ -4,7 +4,7 @@
 
 use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
 
-use crate::{candidate::{Candidate, VoteStatus}, common::{self, RpcRetry, RPC_FAIL_RETRY}, event::Event, info, log::{LogInfo, LogPack, Logs}, raft::RaftCore, role::{RoleEvQueue, Trans}, service::{AppendEntriesArgs, AppendEntriesReply, AppendEntriesRes, AppendEntriesType, EntryStatus, QueryEntryArgs, QueryEntryReply, QueryEntryRes, RequestVoteArgs, RequestVoteReply}, utils::Peer, OneTx};
+use crate::{candidate::{Candidate, VoteStatus}, common::{self, RPC_FAIL_RETRY}, event::Event, info, log::{LogInfo, Logs}, raft::RaftCore, role::{RoleEvQueue, Trans}, service::{AppendEntriesArgs, AppendEntriesReply, AppendEntriesType, EntryStatus, QueryEntryArgs, QueryEntryReply, RequestVoteArgs, RequestVoteReply}, utils::Peer, OneTx};
 
 pub struct Leader {
     pub core: RaftCore,
@@ -60,12 +60,12 @@ impl Replicator {
                     QueryEntryReply::NotExist => {
                         r = mid - 1;
                     },
-                    QueryEntryReply::Stale {new_term} => {
-                        let _ = self.ev_q.put(Event::Trans(Trans::ToFollower {
-                            new_term: Some(new_term)
-                        })).await;
-                        return;
-                    }
+                    // QueryEntryReply::Stale {new_term} => {
+                    //     let _ = self.ev_q.put(Event::Trans(Trans::ToFollower {
+                    //         new_term: Some(new_term)
+                    //     })).await;
+                    //     return;
+                    // }
                 }
             }
 
@@ -99,16 +99,21 @@ impl Replicator {
             };
 
             let args = AppendEntriesArgs {
-                id: self.core.me,
+                from: self.core.me,
                 term: self.core.term(),
                 entry_type
             };
 
-            // keep_call may take very long
-            let reply = self.peer.call::<_, AppendEntriesReply, ()>(
+            // this may take very long time,
+            // call only returns None when the leader is shut down, 
+            // in which case we let the replicator break the loop and exit.
+            let reply = match self.peer.call::<_, AppendEntriesReply, ()>(
                 common::APPEND_ENTRIES,
                 &args
-            ).await.unwrap();
+            ).await {
+                None => break 'repl,
+                Some(r) => r
+            };
             
             match reply.entry_status {
                 EntryStatus::Stale { term } => {
@@ -131,6 +136,11 @@ impl Replicator {
 impl Leader {
     fn new(core: RaftCore, logs: Logs, ev_q: RoleEvQueue) -> Self {
         info!("{core} become a leader");
+
+        // when a node become a leader, it pushes a noop log to its logs,
+        // this will be the first log entry in its reign.
+        logs.ld_push_noop(core.term()).await;
+
         // spawn heartbeat senders
         let active = Arc::new(AtomicBool::new(true));
         for peer in core.rpc_client.peers() {
@@ -160,11 +170,11 @@ impl Leader {
             Event::Trans(to) => return Some(to),
 
             Event::AppendEntries {args, reply_tx} => {
-                info!("{self}: AppendEntries from {}, term={}", args.id, args.term);
+                info!("{self}: AppendEntries from {}, term={}", args.from, args.term);
                 self.append_entries(args, reply_tx).await;
             },
             Event::RequestVote {args, reply_tx} => {
-                info!("{self}: RequestVote from {}, term={}", args.id, args.term);
+                info!("{self}: RequestVote from {}, term={}", args.from, args.term);
                 self.request_vote(args, reply_tx).await;
             },
             
@@ -192,7 +202,7 @@ impl Leader {
             }
         } else if args.term == myterm {
             panic!("Leader {} and {} has the same term {}", 
-                self.core.me, args.id, myterm);
+                self.core.me, args.from, myterm);
         } else {
             let _ = self.ev_q.put(Event::Trans(Trans::ToFollower {
                 new_term: Some(args.term)
@@ -200,7 +210,7 @@ impl Leader {
             EntryStatus::Retry
         };
         let reply = AppendEntriesReply {
-            id: self.core.me,
+            from: self.core.me,
             entry_status
         };
         reply_tx.send(reply).unwrap();
@@ -219,7 +229,7 @@ impl Leader {
             })).await;
             
             if self.logs.up_to_date(&args.last_log).await {
-                *self.core.vote_for.lock().await = Some(args.id);
+                *self.core.vote_for.lock().await = Some(args.from);
                 VoteStatus::Granted
             } else {
                 // even myterm here is outdated, it makes no difference

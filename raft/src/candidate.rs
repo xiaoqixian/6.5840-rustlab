@@ -7,7 +7,7 @@ use std::sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, Arc};
 use labrpc::{client::ClientEnd, err::{DISCONNECTED, TIMEOUT}};
 use serde::{Deserialize, Serialize};
 
-use crate::{common, event::{Event, TO_LEADER}, follower::Follower, log::Logs, raft::RaftCore, role::{RoleEvQueue, Trans}, service::{AppendEntriesArgs, AppendEntriesReply, EntryStatus, RequestVoteArgs, RequestVoteReply, RequestVoteRes}, OneTx};
+use crate::{common, event::{Event, TO_LEADER}, follower::Follower, log::Logs, raft::RaftCore, role::{RoleEvQueue, Trans}, service::{AppendEntriesArgs, AppendEntriesReply, EntryStatus, QueryEntryArgs, QueryEntryReply, RequestVoteArgs, RequestVoteReply, RequestVoteRes}, OneTx};
 use crate::info;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -92,11 +92,17 @@ impl Candidate {
                 tx.send((term, false)).unwrap();
             },
             Event::AppendEntries {args, reply_tx} => {
+                info!("{self}: AppendEntries from {}, term={}", args.from, args.term);
                 self.append_entries(args, reply_tx).await;
             },
             Event::RequestVote {args, reply_tx} => {
+                info!("{self}: RequestVote from {}, term={}", args.from, args.term);
                 self.request_vote(args, reply_tx).await;
             },
+            Event::QueryEntry {args, reply_tx} => {
+                info!("{self}: QueryEntry, log_info = {}", args.log_info);
+                self.query_entry(args, reply_tx).await;
+            }
 
             // candidate related events
             Event::GrantVote { voter } => {
@@ -144,7 +150,7 @@ impl Candidate {
             }
         };
         let reply = AppendEntriesReply {
-            id: self.core.me,
+            from: self.core.me,
             entry_status
         };
         reply_tx.send(reply).unwrap();
@@ -175,7 +181,7 @@ impl Candidate {
             cmp::Ordering::Equal => {
                 let vote_for = self.core.vote_for.lock().await.clone();
                 match vote_for {
-                    Some(vote_for) if vote_for == args.id => VoteStatus::Granted,
+                    Some(vote_for) if vote_for == args.from => VoteStatus::Granted,
                     _ => VoteStatus::Rejected { term: myterm }
                 }
             },
@@ -186,7 +192,7 @@ impl Candidate {
                 let up_to_date = self.logs.up_to_date(&args.last_log).await;
 
                 if up_to_date {
-                    *self.core.vote_for.lock().await = Some(args.id);
+                    *self.core.vote_for.lock().await = Some(args.from);
                     VoteStatus::Granted
                 } else {
                     VoteStatus::Rejected {
@@ -200,6 +206,13 @@ impl Candidate {
             voter: self.core.me,
             vote
         };
+        reply_tx.send(reply).unwrap();
+    }
+
+    pub async fn query_entry(&self, args: QueryEntryArgs, reply_tx: OneTx<QueryEntryReply>) {
+        let reply = if self.logs.log_exist(&args.log_info).await {
+            QueryEntryReply::Exist
+        } else { QueryEntryReply::NotExist };
         reply_tx.send(reply).unwrap();
     }
 
@@ -222,7 +235,7 @@ impl Poll {
         info!("Candiate {} start election with term {term}", self.core.me);
 
         let args = RequestVoteArgs {
-            id: self.core.me,
+            from: self.core.me,
             term,
             last_log: self.logs.last_log_info().await
         };
