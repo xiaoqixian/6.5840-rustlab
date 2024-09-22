@@ -23,12 +23,12 @@ pub struct Follower {
 }
 
 impl Follower {
-    pub fn new(core: RaftCore, logs: Logs) -> Self {
+    pub async fn new(core: RaftCore, logs: Logs) -> Self {
         let ev_q = RoleEvQueue::new(core.ev_q.clone(), 0);
-        Self::new_with_ev_q(core, logs, ev_q)
+        Self::new_with_ev_q(core, logs, ev_q).await
     }
 
-    pub fn new_with_ev_q(core: RaftCore, logs: Logs, ev_q: RoleEvQueue) -> Self {
+    pub async fn new_with_ev_q(core: RaftCore, logs: Logs, ev_q: RoleEvQueue) -> Self {
         let heartbeat_timer = Timer::new(ev_q.clone(), core.me);
         Self {
             core,
@@ -36,6 +36,14 @@ impl Follower {
             ev_q,
             heartbeat_timer
         }
+    }
+
+    pub async fn from_candidate(cd: Candidate) -> Self {
+        Self::new_with_ev_q(cd.core, cd.logs, cd.ev_q.transfer()).await
+    }
+
+    pub async fn from_leader(ld: Leader) -> Self {
+        Self::new_with_ev_q(ld.core, ld.logs, ld.ev_q.transfer()).await
     }
 
     pub async fn process(&mut self, ev: Event) -> Option<Trans> {
@@ -135,18 +143,6 @@ impl Follower {
             QueryEntryReply::Exist
         } else { QueryEntryReply::NotExist };
         reply_tx.send(reply).unwrap();
-    }
-}
-
-impl From<Candidate> for Follower {
-    fn from(cd: Candidate) -> Self {
-        Self::new_with_ev_q(cd.core, cd.logs, cd.ev_q.transfer())
-    }
-}
-
-impl From<Leader> for Follower {
-    fn from(ld: Leader) -> Self {
-        Self::new_with_ev_q(ld.core, ld.logs, ld.ev_q.transfer())
     }
 }
 

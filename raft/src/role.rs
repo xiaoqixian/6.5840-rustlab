@@ -91,22 +91,22 @@ impl Role {
             *self = match (role, trans) {
                 (Self::Follower(flw), Trans::ToCandidate) => {
                     flw.core.term.fetch_add(1, Ordering::AcqRel);
-                    Self::Candidate(Candidate::from(flw))
+                    Self::Candidate(Candidate::from_follower(flw).await)
                 },
                 (Self::Candidate(cd), Trans::ToLeader) => {
-                    Self::Leader(Leader::from(cd))
+                    Self::Leader(Leader::from_candidate(cd).await)
                 },
                 (Self::Candidate(cd), Trans::ToFollower {new_term}) => {
                     if let Some(new_term) = new_term {
                         cd.core.set_term(new_term);
                     }
-                    Self::Follower(Follower::from(cd))
+                    Self::Follower(Follower::from_candidate(cd).await)
                 },
                 (Self::Leader(ld), Trans::ToFollower {new_term}) => {
                     if let Some(new_term) = new_term {
                         ld.core.set_term(new_term);
                     }
-                    Self::Follower(Follower::from(ld))
+                    Self::Follower(Follower::from_leader(ld).await)
                 },
                 (r, t) => panic!("Unexpected combination of 
                     transformation {t:?} and role {r}.")

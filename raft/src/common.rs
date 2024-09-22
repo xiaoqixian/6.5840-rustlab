@@ -26,53 +26,43 @@ pub fn gen_rand_duration(range: Range<u64>) -> Duration {
 
 
 #[macro_export]
-#[cfg(not(feature = "no_debug"))]
 macro_rules! log {
-    (($($rgb: literal),*), $($args: expr),*) => {{
-        use colored::Colorize;
-        let msg = format!($($args),*).truecolor($($rgb),*);
-        println!("{msg}");
-    }}
-}
-
-#[cfg(feature = "no_debug")]
-macro_rules! log {
-    ($color: indent, $($args: expr),*) => {}
-}
-
-#[macro_export]
-#[cfg(feature = "info")]
-macro_rules! info {
-    ($($args: expr),*) => {
-        crate::log!((145, 178, 244), $($args),*)
+    (($($rgb: literal),*), $($args: expr),*) => {
+        #[cfg(not(feature = "no_debug"))]
+        {
+            use colored::Colorize;
+            let msg = format!($($args),*).truecolor($($rgb),*);
+            println!("{msg}");
+        }
     }
 }
+
 #[macro_export]
-#[cfg(not(feature = "info"))]
 macro_rules! info {
-    ($($args: expr),*) => {}
+    ($($args: expr),*) => {
+        #[cfg(feature = "info_log_level")]
+        {
+            crate::log!((145, 178, 244), $($args),*)
+        }
+    }
 }
 
 #[macro_export]
 macro_rules! warn {
     ($($args: expr),*) => {
-        crate::log!((255,175,0), $($args),*)
+        #[cfg(feature = "warn_log_level")]
+        {
+            crate::log!((255,175,0), $($args),*)
+        }
     }
-}
-#[macro_export]
-#[cfg(not(feature = "warn"))]
-macro_rules! warn {
-    ($($args: expr),*) => {}
 }
 
 #[macro_export]
 macro_rules! error {
     ($($args: expr),*) => {
-        crate::log!((255,0,0), $($args),*)
+        #[cfg(feature = "error_log_level")]
+        {
+            crate::log!((255,0,0), $($args),*)
+        }
     }
-}
-#[macro_export]
-#[cfg(not(feature = "error"))]
-macro_rules! error {
-    ($($args: expr),*) => {}
 }

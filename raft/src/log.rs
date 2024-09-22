@@ -9,7 +9,7 @@ use tokio::sync::RwLock;
 
 use crate::{raft::RaftCore, service::AppendEntriesType};
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub struct LogInfo {
     pub index: usize,
     pub term: usize
@@ -130,12 +130,7 @@ impl LogsImpl {
 
     pub async fn up_to_date(&self, log_info: &LogInfo) -> bool {
         let my_last = self.last_log_info().await;
-        
-        if my_last.term == log_info.term {
-            my_last.index <= log_info.index
-        } else {
-            my_last.term < log_info.term
-        }
+        my_last <= *log_info
     }
 
     /// Called by replicators, given a next_index, if the latest log 
@@ -150,7 +145,8 @@ impl LogsImpl {
             .map(|entry| entry.index)
             .expect(Self::EMPTY_LOGS);
         
-        assert!(((logs.offset+1)..=lli).contains(&next_index));
+        assert!(((logs.offset+1)..=lli).contains(&next_index), 
+            "next_index {next_index} not found in [{}, {lli}]", logs.offset+1);
 
         if next_index == lli {
             None
@@ -171,7 +167,7 @@ impl LogsImpl {
 
     pub async fn lii_lli(&self) -> (usize, usize) {
         let logs = self.logs.read().await;
-        (logs.offset, logs.last().unwrap().index)
+        (logs.offset + 1, logs.last().unwrap().index)
     }
 
     // get a log entry term with the log index,
@@ -252,5 +248,21 @@ impl From<&LogEntry> for LogInfo {
 impl std::fmt::Display for LogInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "({}, {})", self.index, self.term)
+    }
+}
+
+impl std::cmp::PartialOrd for LogInfo {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        use std::cmp;
+        match self.term.cmp(&other.term) {
+            cmp::Ordering::Equal => Some(self.index.cmp(&other.index)),
+            ord => Some(ord)
+        }
+    }
+}
+
+impl std::cmp::Ord for LogInfo {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.partial_cmp(other).unwrap()
     }
 }

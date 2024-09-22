@@ -75,7 +75,7 @@ impl Raft {
         core.rpc_client.add_service("RpcService".to_string(), 
             Box::new(RpcService::new(core.clone()))).await;
 
-        let flw = Follower::new(core.clone(), logs);
+        let flw = Follower::new(core.clone(), logs).await;
         tokio::spawn(Self::process_ev(Role::Follower(flw), ev_ch_rx));
 
         info!("Raft instance {me} started.");

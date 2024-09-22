@@ -67,7 +67,9 @@ impl EvQueue {
     /// be put in this way, like Event::GetState.
     pub async fn just_put(&self, ev: Event) {
         let ev_ch = self.ev_ch.read().await;
-        ev_ch.send(ev).unwrap();
+        if let Err(_) = ev_ch.send(ev) {
+            warn!("EvQueue just_put failed");
+        }
     }
 
     /// Put an event to the event queue, return Err(event) 

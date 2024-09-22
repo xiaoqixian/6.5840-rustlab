@@ -28,6 +28,9 @@ impl Replicator {
     async fn match_index(&mut self) {
         'search: while self.active.load(Ordering::Acquire) {
             let (mut l, mut r) = self.logs.lii_lli().await;
+            let mut last_exit_index = 0usize;
+            info!("{self}: match_index search between [{l}, {r}]");
+
             'round: while self.active.load(Ordering::Acquire) && l <= r {
                 let mid = l + (r - l)/2;
                 let mid_term = match self.logs.index_term(mid).await {
@@ -55,6 +58,7 @@ impl Replicator {
 
                 match reply {
                     QueryEntryReply::Exist => {
+                        last_exit_index = mid;
                         l = mid + 1;
                     },
                     QueryEntryReply::NotExist => {
@@ -69,7 +73,7 @@ impl Replicator {
                 }
             }
 
-            self.next_index = r;
+            self.next_index = last_exit_index + 1;
             break 'search;
         }
     }
@@ -134,7 +138,7 @@ impl Replicator {
 }
 
 impl Leader {
-    fn new(core: RaftCore, logs: Logs, ev_q: RoleEvQueue) -> Self {
+    async fn new(core: RaftCore, logs: Logs, ev_q: RoleEvQueue) -> Self {
         info!("{core} become a leader");
 
         // when a node become a leader, it pushes a noop log to its logs,
@@ -163,6 +167,10 @@ impl Leader {
         }
     }
 
+    pub async fn from_candidate(cd: Candidate) -> Self {
+        Self::new(cd.core, cd.logs, cd.ev_q.transfer()).await
+    }
+
     pub async fn process(&mut self, ev: Event) -> Option<Trans> {
         match ev {
             Event::Trans(Trans::ToLeader) => 
@@ -177,6 +185,10 @@ impl Leader {
                 info!("{self}: RequestVote from {}, term={}", args.from, args.term);
                 self.request_vote(args, reply_tx).await;
             },
+            Event::QueryEntry {args, reply_tx} => {
+                info!("{self}: QueryEntry, log_info = {}", args.log_info);
+                self.query_entry(args, reply_tx).await;
+            }
             
             Event::GetState(tx) => {
                 tx.send((self.core.term(), true)).unwrap();
@@ -246,11 +258,12 @@ impl Leader {
         };
         reply_tx.send(reply).unwrap();
     }
-}
 
-impl From<Candidate> for Leader {
-    fn from(cd: Candidate) -> Self {
-        Self::new(cd.core, cd.logs, cd.ev_q.transfer())
+    async fn query_entry(&self, args: QueryEntryArgs, reply_tx: OneTx<QueryEntryReply>) {
+        let reply = if self.logs.log_exist(&args.log_info).await {
+            QueryEntryReply::Exist
+        } else { QueryEntryReply::NotExist };
+        reply_tx.send(reply).unwrap();
     }
 }
 

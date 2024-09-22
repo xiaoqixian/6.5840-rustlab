@@ -46,8 +46,8 @@ pub struct Candidate {
     poll: Arc<Poll>,
 }
 
-impl From<Follower> for Candidate {
-    fn from(flw: Follower) -> Self {
+impl Candidate {
+    pub async fn from_follower(flw: Follower) -> Self {
         let Follower {
             core, logs, ev_q, ..
         } = flw;
@@ -77,9 +77,7 @@ impl From<Follower> for Candidate {
             ev_q
         }
     }
-}
 
-impl Candidate {
     pub async fn process(&mut self, ev: Event) -> Option<Trans> {
         match ev {
             Event::Trans(Trans::ToCandidate) => 
@@ -175,7 +173,7 @@ impl Candidate {
 
         use std::cmp;
         let vote = match myterm.cmp(&args.term) {
-            cmp::Ordering::Less => {
+            cmp::Ordering::Greater => {
                 VoteStatus::Rejected { term: myterm }
             },
             cmp::Ordering::Equal => {
@@ -185,7 +183,7 @@ impl Candidate {
                     _ => VoteStatus::Rejected { term: myterm }
                 }
             },
-            cmp::Ordering::Greater => {
+            cmp::Ordering::Less => {
                 let _ = self.ev_q.put(Event::Trans(Trans::ToFollower {
                     new_term: Some(args.term)
                 })).await;
@@ -195,6 +193,11 @@ impl Candidate {
                     *self.core.vote_for.lock().await = Some(args.from);
                     VoteStatus::Granted
                 } else {
+                    {
+                        let my_last = self.logs.last_log_info().await;
+                        info!("Reject {} for stale logs, my last = {}, its last = {}", args.from, my_last, args.last_log);
+                        
+                    }
                     VoteStatus::Rejected {
                         term: myterm
                     }
