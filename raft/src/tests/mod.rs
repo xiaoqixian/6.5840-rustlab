@@ -5,6 +5,9 @@
 #[cfg(test)]
 mod test_3a;
 
+#[cfg(test)]
+mod test_3b;
+
 use std::{collections::HashMap, ops::DerefMut, sync::{atomic::{AtomicBool, Ordering}, Arc}, time::Duration};
 
 use labrpc::network::Network;
