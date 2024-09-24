@@ -8,7 +8,7 @@ mod test_3a;
 #[cfg(test)]
 mod test_3b;
 
-use std::{collections::HashMap, ops::DerefMut, sync::{atomic::{AtomicBool, Ordering}, Arc}, time::Duration};
+use std::{collections::HashMap, ops::DerefMut, sync::{atomic::{AtomicBool, Ordering}, Arc}, time::{Duration, Instant}};
 
 use labrpc::network::Network;
 use tokio::sync::{Mutex, RwLock};
@@ -251,15 +251,75 @@ impl Tester {
         }
     }
 
+    /// Commit a command, ask every node if it is a leader, 
+    /// if is, ask it to commit a command.
+    /// If the command is successfully committed, return its index.
+    async fn commit_one(&self, cmd: CmdType, quorum: usize, retry: bool) -> Option<usize> {
+        let cmd_bin = bincode::serialize(&cmd).unwrap();
+
+        tokio::time::timeout(Duration::from_secs(10), async move {
+            loop {
+                let mut index = None;
+                for raft in self.config.write().await.nodes.iter_mut()
+                    .filter_map(|node| node.raft.as_mut())
+                {
+                    if let Some((idx, _)) = raft.start(cmd_bin.clone()).await {
+                        index = Some(idx);
+                        break;
+                    }
+                }
+
+                if let Some(index) = index {
+                    let check_commit = tokio::time::timeout(
+                        Duration::from_secs(2),
+                        async move {
+                            loop {
+                                match self.n_committed(index).await {
+                                    (cnt, Some(cmt_cmd)) => {
+                                        if cnt >= quorum && cmt_cmd == cmd {
+                                            break index;
+                                        }
+                                    },
+                                    _ => {}
+                                }
+                                tokio::time::sleep(Duration::from_millis(20)).await;
+                            }
+                        }
+                    );
+                    match check_commit.await {
+                        Ok(index) => break index,
+                        Err(_) => {
+                            if !retry {
+                                fatal!("One cmd {cmd} failed to reach agreement");
+                            }
+                        }
+                    }
+                } else {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }
+        }).await.ok()
+    }
+
     /// Check how many nodes think a command at index is committed.
     /// We assume the applied logs are consistent, so we don't check 
     /// if their values are equal.
-    async fn n_committed(&self, idx: usize) -> usize {
-        self.config.read().await
+    async fn n_committed(&self, idx: usize) -> (usize, Option<CmdType>) {
+        let mut cnt = 0usize;
+        let mut cmd = None;
+        for log in self.config.read().await
             .logs.lock().await
             .logs.iter()
-            .filter(|log| log.get(idx).is_some())
-            .count()
+        {
+            if let Some(cmd_i) = log.get(idx) {
+                match cmd {
+                    None => cmd = Some(*cmd_i),
+                    Some(cmd) => assert_eq!(cmd, *cmd_i)
+                }
+                cnt += 1;
+            }
+        }
+        (cnt, cmd)
     }
 
     async fn ingest_snapshot(&self, id: usize, snapshot: Vec<u8>, index: Option<usize>) {
