@@ -29,12 +29,8 @@ macro_rules! greet {
     }}
 }
 
-// macro_rules! warn {
-//     ($($args: expr),*) => {{
-//         let msg = format!($($args),*).truecolor(255,175,0);
-//         println!("{msg}");
-//     }}
-// }
+// To make it simple to compare, we use u32 to be the command type.
+type CmdType = u32;
 
 struct Node {
     last_applied: usize,
@@ -54,7 +50,7 @@ struct Config {
 }
 
 struct Logs {
-    logs: Vec<Vec<u32>>,
+    logs: Vec<Vec<CmdType>>,
     max_cmd_indx: usize
 }
 
@@ -255,6 +251,17 @@ impl Tester {
         }
     }
 
+    /// Check how many nodes think a command at index is committed.
+    /// We assume the applied logs are consistent, so we don't check 
+    /// if their values are equal.
+    async fn n_committed(&self, idx: usize) -> usize {
+        self.config.read().await
+            .logs.lock().await
+            .logs.iter()
+            .filter(|log| log.get(idx).is_some())
+            .count()
+    }
+
     async fn ingest_snapshot(&self, id: usize, snapshot: Vec<u8>, index: Option<usize>) {
 
     }
@@ -292,31 +299,42 @@ impl Applier {
     /// if ok, insert this command into logs.
     /// WARN: check_logs assume the Config.lock is hold by the caller.
     async fn check_logs(&self, id: usize, cmd: Command) {
-        let cmd_value = bincode::deserialize::<u32>(&cmd.command[..])
-            .expect("Expected command value type to be u32");
+        let cmd_value = bincode::deserialize::<CmdType>(&cmd.command[..])
+            .unwrap();
 
-        let mut logs_ctrl = self.logs.lock().await;
-        let logs = &mut logs_ctrl.logs;
+        let mut logs_guard = self.logs.lock().await;
+        let logs = &mut logs_guard.logs;
 
-        if cmd.index > logs[id as usize].len() {
-            fatal!("server {id} apply out of order {}", cmd.index);
+        // the command index can only be equal to the length of the 
+        // corresponding log list.
+        // if greater, logs applied out of order;
+        // if less, the log is applied before, which is not allowed 
+        // for a state machine.
+        if cmd.index > logs[id].len() {
+            fatal!("Server {id} apply out of order {}", cmd.index);
+        }
+        else if cmd.index < logs[id].len() {
+            fatal!("Server {id} applied the log {} before", cmd.index);
         }
 
-        for i in 0..logs.len() {
-            let log = &logs[i];
+        // check all logs of other nodes, if the index exist in the logs
+        // applied by them. 
+        // panics if exist two command values are inconsistent.
+        for (i, log) in logs.iter().enumerate() {
             match log.get(cmd.index) {
                 Some(&val) if val != cmd_value => {
                     fatal!("commit index = {} server={} {} != server={} {}",
                         cmd.index, 
                         id, cmd_value,
-                        i, val);
+                        i, val
+                    );
                 },
                 _ => {}
             }
         }
 
         logs[id as usize].push(cmd_value);
-        logs_ctrl.max_cmd_indx = usize::max(logs_ctrl.max_cmd_indx, 
+        logs_guard.max_cmd_indx = usize::max(logs_guard.max_cmd_indx, 
             cmd.index);
     }
 }

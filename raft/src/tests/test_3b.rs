@@ -3,10 +3,18 @@
 // Author: https://github.com/xiaoqixian
 
 use std::time::Duration;
+use colored::Colorize;
 
 use crate::tests::Tester;
 
 const TIME_LIMIT: Duration = Duration::from_secs(120);
+
+macro_rules! fatal {
+    ($($args: expr),*) => {{
+        let msg = format!($($args),*).red();
+        panic!("{msg}");
+    }}
+}
 /*
  * func TestBasicAgree3B(t *testing.T) {
 	servers := 3
@@ -41,4 +49,11 @@ async fn test3b_basic_agree() {
     let tester = Tester::new(N, RELIABLE, SNAPSHOT, TIME_LIMIT).await;
 
     tester.begin("Test 3B: basic agreement").await;
+
+    for index in 1..=3 {
+        let nc = tester.n_committed(index).await;
+        if nc > 0 {
+            fatal!("Some have committed before start");
+        }
+    }
 }
