@@ -8,9 +8,10 @@ mod test_3a;
 #[cfg(test)]
 mod test_3b;
 
-use std::{collections::HashMap, ops::DerefMut, sync::{atomic::{AtomicBool, Ordering}, Arc}, time::{Duration, Instant}};
+use std::{collections::HashMap, fmt::{Debug, Display}, ops::DerefMut, sync::{atomic::{AtomicBool, Ordering}, Arc}, time::Duration};
 
 use labrpc::network::Network;
+use serde::{de::DeserializeOwned, Serialize};
 use tokio::sync::{Mutex, RwLock};
 use crate::{msg::{ApplyMsg, Command}, persist::Persister, raft::Raft, UbRx};
 use colored::Colorize;
@@ -29,9 +30,6 @@ macro_rules! greet {
     }}
 }
 
-// To make it simple to compare, we use u32 to be the command type.
-type CmdType = u32;
-
 struct Node {
     last_applied: usize,
     persister: Persister,
@@ -39,34 +37,37 @@ struct Node {
     connected: bool
 }
 
-struct Config {
+struct Config<T> {
     n: usize,
     net: Network,
     bytes: usize,
     nodes: Vec<Node>,
-    logs: Arc<Mutex<Logs>>,
+    logs: Arc<Mutex<Logs<T>>>,
     
     start: std::time::Instant,
 }
 
-struct Logs {
-    logs: Vec<Vec<CmdType>>,
+struct Logs<T> {
+    logs: Vec<Vec<T>>,
     max_cmd_indx: usize
 }
 
-struct Applier {
+struct Applier<T> {
     id: usize,
-    logs: Arc<Mutex<Logs>>,
+    logs: Arc<Mutex<Logs<T>>>,
     apply_ch: UbRx<ApplyMsg>
 }
 
-struct Tester {
-    config: Arc<RwLock<Config>>,
+/// T: the command type
+struct Tester<T> {
+    config: Arc<RwLock<Config<T>>>,
     time_limit: Duration,
     finished: Arc<AtomicBool>
 }
 
-impl Tester {
+impl<T> Tester<T> 
+    where T: Eq + Clone + Serialize + DeserializeOwned + Display + Debug + Send + 'static
+{
     pub async fn new(n: usize, reliable: bool, snapshot: bool, time_limit: Duration) -> Self {
         let config = Config {
             n,
@@ -100,7 +101,7 @@ impl Tester {
         tester
     }
 
-    async fn begin<T: std::fmt::Display>(&self, desc: T) {
+    async fn begin<D: std::fmt::Display>(&self, desc: D) {
         println!("{desc}...");
         self.config.write().await.start = std::time::Instant::now();
         
@@ -254,10 +255,11 @@ impl Tester {
     /// Commit a command, ask every node if it is a leader, 
     /// if is, ask it to commit a command.
     /// If the command is successfully committed, return its index.
-    async fn commit_one(&self, cmd: CmdType, quorum: usize, retry: bool) -> Option<usize> {
+    async fn commit_one(&self, cmd: T, expected_servers: usize, retry: bool) -> Option<usize> {
         let cmd_bin = bincode::serialize(&cmd).unwrap();
 
         tokio::time::timeout(Duration::from_secs(10), async move {
+            let cmd = Arc::new(cmd);
             loop {
                 let mut index = None;
                 for raft in self.config.write().await.nodes.iter_mut()
@@ -270,22 +272,25 @@ impl Tester {
                 }
 
                 if let Some(index) = index {
-                    let check_commit = tokio::time::timeout(
-                        Duration::from_secs(2),
-                        async move {
-                            loop {
-                                match self.n_committed(index).await {
-                                    (cnt, Some(cmt_cmd)) => {
-                                        if cnt >= quorum && cmt_cmd == cmd {
-                                            break index;
-                                        }
-                                    },
-                                    _ => {}
+                    let check_commit = {
+                        let cmd = cmd.clone();
+                        tokio::time::timeout(
+                            Duration::from_secs(2),
+                            async move {
+                                loop {
+                                    match self.n_committed(index).await {
+                                        (cnt, Some(cmt_cmd)) => {
+                                            if cnt >= expected_servers && cmt_cmd == *cmd {
+                                                break index;
+                                            }
+                                        },
+                                        _ => {}
+                                    }
+                                    tokio::time::sleep(Duration::from_millis(20)).await;
                                 }
-                                tokio::time::sleep(Duration::from_millis(20)).await;
                             }
-                        }
-                    );
+                        )
+                    };
                     match check_commit.await {
                         Ok(index) => break index,
                         Err(_) => {
@@ -304,7 +309,7 @@ impl Tester {
     /// Check how many nodes think a command at index is committed.
     /// We assume the applied logs are consistent, so we don't check 
     /// if their values are equal.
-    async fn n_committed(&self, idx: usize) -> (usize, Option<CmdType>) {
+    async fn n_committed(&self, idx: usize) -> (usize, Option<T>) {
         let mut cnt = 0usize;
         let mut cmd = None;
         for log in self.config.read().await
@@ -312,9 +317,9 @@ impl Tester {
             .logs.iter()
         {
             if let Some(cmd_i) = log.get(idx) {
-                match cmd {
-                    None => cmd = Some(*cmd_i),
-                    Some(cmd) => assert_eq!(cmd, *cmd_i)
+                match &cmd {
+                    None => cmd = Some(cmd_i.clone()),
+                    Some(cmd) => assert_eq!(cmd, cmd_i)
                 }
                 cnt += 1;
             }
@@ -332,17 +337,21 @@ impl Tester {
         config.net.connect(id, enable).await;
     }
 
-    #[inline]
     async fn disconnect(&self, id: usize) {
         self.enable(id, false).await;
     }
-    #[inline]
     async fn connect(&self, id: usize) {
         self.enable(id, true).await;
     }
+
+    async fn byte_cnt(&self) -> u64 {
+        self.config.read().await.net.byte_cnt()
+    }
 }
 
-impl Applier {
+impl<T> Applier<T> 
+    where T: Eq + Clone + Serialize + DeserializeOwned + Display + Debug + Send + 'static
+{
     async fn run(mut self, snap: bool) {
         while let Some(msg) = self.apply_ch.recv().await {
             match msg {
@@ -359,7 +368,7 @@ impl Applier {
     /// if ok, insert this command into logs.
     /// WARN: check_logs assume the Config.lock is hold by the caller.
     async fn check_logs(&self, id: usize, cmd: Command) {
-        let cmd_value = bincode::deserialize::<CmdType>(&cmd.command[..])
+        let cmd_value = bincode::deserialize_from::<_, T>(&cmd.command[..])
             .unwrap();
 
         let mut logs_guard = self.logs.lock().await;
@@ -382,7 +391,7 @@ impl Applier {
         // panics if exist two command values are inconsistent.
         for (i, log) in logs.iter().enumerate() {
             match log.get(cmd.index) {
-                Some(&val) if val != cmd_value => {
+                Some(val) if *val != cmd_value => {
                     fatal!("commit index = {} server={} {} != server={} {}",
                         cmd.index, 
                         id, cmd_value,
