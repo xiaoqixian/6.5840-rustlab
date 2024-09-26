@@ -30,6 +30,8 @@ macro_rules! greet {
     }}
 }
 
+const ELECTION_TIMEOUT: Duration = Duration::from_secs(1);
+
 struct Node {
     last_applied: usize,
     persister: Persister,
@@ -129,6 +131,14 @@ impl<T> Tester<T>
         greet!(" ... Passed --");
         greet!(" {}ms, {} peers, {} rpc, {} bytes, {} cmds", 
             t.as_millis(), config.n, nrpc, nbytes, ncmd);
+    }
+
+    async fn cleanup(&self) {
+        self.finished.store(true, Ordering::Release);
+        for raft in self.config.write().await
+            .nodes.iter().filter_map(|node| node.raft.as_ref()) {
+            raft.kill().await;
+        }
     }
 
     async fn start1(&self, id: usize, snapshot: bool) {

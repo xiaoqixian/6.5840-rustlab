@@ -4,9 +4,7 @@
 
 use std::time::Duration;
 
-use super::Tester;
-
-const ELECTION_TIMEOUT: Duration = Duration::from_secs(1);
+use super::{Tester, ELECTION_TIMEOUT};
 
 const TIME_LIMIT: Duration = Duration::from_secs(120);
 
