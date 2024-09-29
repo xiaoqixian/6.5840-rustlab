@@ -3,7 +3,7 @@
 // Author: https://github.com/xiaoqixian
 
 use crate::{
-    err::Error, server::Server, Idx, Key, Msg, RpcReq, Service, UbTx
+    err::{Error, DISCONNECTED, TIMEOUT}, server::Server, Idx, Key, Msg, RpcReq, Service, UbTx
 };
 
 use serde::{Serialize, de::DeserializeOwned};
@@ -127,9 +127,20 @@ impl ClientEnd {
             req,
             reply_tx: tx
         };
-        self.net_tx.send(msg).unwrap();
+        // the network is closed.
+        if let Err(_) = self.net_tx.send(msg) {
+            return Err(DISCONNECTED);
+        }
+
+        let res_enc = match rx.await {
+            Ok(r) => r?,
+            Err(_) => {
+                // the sender is dropped without sending, 
+                // which means the message is dropped.
+                return Err(TIMEOUT);
+            }
+        };
         
-        let res_enc = rx.await.unwrap()?;
         let res: R = bincode::deserialize(&res_enc[..]).unwrap();
         Ok(res)
     }

@@ -159,7 +159,7 @@ impl NetworkCore {
                 }
         };
 
-        reply_tx.send(result).unwrap()
+        let _ = reply_tx.send(result);
     }
 
     async fn dispatch(self: Arc<Self>, to: Idx, req: RpcReq) -> CallResult {
