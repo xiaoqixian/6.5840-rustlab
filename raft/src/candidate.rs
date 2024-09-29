@@ -2,7 +2,7 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use std::sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, Arc};
+use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
 
 use labrpc::{client::ClientEnd, err::{DISCONNECTED, TIMEOUT}};
 use serde::{Deserialize, Serialize};
@@ -29,52 +29,67 @@ pub enum VoteStatus {
 }
 
 struct Poll {
-    core: RaftCore,
-    logs: Logs,
-    votes: AtomicUsize,
-    voters: Vec<AtomicBool>,
-    quorum: usize,
+    me: usize,
+    term: usize,
     ev_q: RoleEvQueue
 }
 
-#[derive(Clone)]
 pub struct Candidate {
     pub core: RaftCore,
     pub logs: Logs,
     pub ev_q: RoleEvQueue,
     active: Arc<AtomicBool>,
-    poll: Arc<Poll>,
+    voters: Vec<bool>,
+    votes: usize,
+    n: usize
 }
 
 impl Candidate {
     pub async fn from_follower(flw: Follower) -> Self {
         let Follower {
-            core, logs, ev_q, ..
+            mut core, logs, ev_q, ..
         } = flw;
         let ev_q = ev_q.transfer();
         let n = core.rpc_client.n();
+        core.term += 1;
 
-        let poll = Poll {
-            core: core.clone(),
-            logs: logs.clone(),
-            votes: AtomicUsize::new(0),
-            voters: std::iter::repeat_with(|| AtomicBool::default())
-                .take(n).collect(),
-            // my own vote is not included
-            quorum: n/2,
-            ev_q: ev_q.clone()
-        };
-        let poll = Arc::new(poll);
+        {
+            let poll = Poll {
+                me: core.me,
+                term: core.term,
+                ev_q: ev_q.clone()
+            };
+            let poll = Arc::new(poll);
 
-        // start election
-        tokio::spawn(poll.clone().start());
+            let args = Arc::new(RequestVoteArgs {
+                from: core.me,
+                term: core.term,
+                last_log: logs.last_log_info().await
+            });
+            
+            for peer in core.rpc_client.peers() {
+                tokio::spawn(poll.clone().poll(peer, args.clone()));
+            }
+
+            let ev_q = ev_q.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(
+                    common::gen_rand_duration(common::ELECTION_TIMEOUT)
+                ).await;
+                if let Ok(_) = ev_q.put(Event::ElectionTimeout).await {
+                    info!("Candidate {} election timeout", core.me);
+                }
+            });
+        }
 
         Self {
             core,
             logs,
             active: Arc::new(AtomicBool::new(true)),
-            poll,
-            ev_q
+            ev_q,
+            voters: vec![false; n],
+            votes: 0,
+            n
         }
     }
 
@@ -86,9 +101,14 @@ impl Candidate {
 
             // RPC request events
             Event::GetState(tx) => {
-                let term = self.core.term();
+                let term = self.core.term;
                 tx.send((term, false)).unwrap();
             },
+
+            Event::StartCmd { reply_tx, .. } => {
+                let _ = reply_tx.send(None);
+            },
+
             Event::AppendEntries {args, reply_tx} => {
                 info!("{self}: AppendEntries from {}, term={}", args.from, args.term);
                 self.append_entries(args, reply_tx).await;
@@ -133,9 +153,9 @@ impl Candidate {
     /// a new leader selected, then the candidate fallback to be a follower.
     /// Otherwise, it's a request from a outdated leader, so the request is 
     /// rejected, candidate returns its new term instead.
-    async fn append_entries(&self, args: AppendEntriesArgs,
+    async fn append_entries(&mut self, args: AppendEntriesArgs,
         reply_tx: OneTx<AppendEntriesReply>) {
-        let myterm = self.core.term();
+        let myterm = self.core.term;
         
         let entry_status = if args.term >= myterm {
             let _ = self.ev_q.put(Event::Trans(Trans::ToFollower {
@@ -167,9 +187,9 @@ impl Candidate {
     /// But there is an exception, if the request has the same term, and this 
     /// node has voted for the id before, then it reply VoteStatus::Granted 
     /// again.
-    async fn request_vote(&self, args: RequestVoteArgs, reply_tx: 
+    async fn request_vote(&mut self, args: RequestVoteArgs, reply_tx: 
         OneTx<RequestVoteReply>) {
-        let myterm = self.core.term();
+        let myterm = self.core.term;
 
         use std::cmp;
         let vote = match myterm.cmp(&args.term) {
@@ -177,9 +197,8 @@ impl Candidate {
                 VoteStatus::Rejected { term: myterm }
             },
             cmp::Ordering::Equal => {
-                let vote_for = self.core.vote_for.lock().await.clone();
-                match vote_for {
-                    Some(vote_for) if vote_for == args.from => VoteStatus::Granted,
+                match &self.core.vote_for {
+                    Some(vote_for) if *vote_for == args.from => VoteStatus::Granted,
                     _ => VoteStatus::Rejected { term: myterm }
                 }
             },
@@ -190,7 +209,7 @@ impl Candidate {
                 let up_to_date = self.logs.up_to_date(&args.last_log).await;
 
                 if up_to_date {
-                    *self.core.vote_for.lock().await = Some(args.from);
+                    self.core.vote_for = Some(args.from);
                     VoteStatus::Granted
                 } else {
                     {
@@ -219,13 +238,14 @@ impl Candidate {
         reply_tx.send(reply).unwrap();
     }
 
-    async fn audit_vote(&self, voter: usize) {
-        assert!(voter != self.core.me && voter < self.core.rpc_client.n(), 
+    async fn audit_vote(&mut self, voter: usize) {
+        assert!(voter != self.core.me && voter < self.n, 
             "Invalid voter id {voter}");
-        let voted = self.poll.voters[voter].swap(true, Ordering::AcqRel);
-        if !voted {
-            let votes = self.poll.votes.fetch_add(1, Ordering::AcqRel) + 1;
-            if votes >= self.poll.quorum {
+
+        if !self.voters[voter] {
+            self.voters[voter] = true;
+            self.votes += 1;
+            if self.votes >= self.n / 2 {
                 let _ = self.ev_q.put(TO_LEADER).await;
             }
         }
@@ -233,29 +253,6 @@ impl Candidate {
 }
 
 impl Poll {
-    async fn start(self: Arc<Self>) {
-        let term = self.core.term.fetch_add(1, Ordering::AcqRel) + 1;
-        info!("Candiate {} start election with term {term}", self.core.me);
-
-        let args = RequestVoteArgs {
-            from: self.core.me,
-            term,
-            last_log: self.logs.last_log_info().await
-        };
-        let args = Arc::new(args);
-
-        for peer in self.core.rpc_client.peers() {
-            tokio::spawn(self.clone().poll(peer, args.clone()));
-        }
-
-        tokio::time::sleep(
-            common::gen_rand_duration(common::ELECTION_TIMEOUT)
-        ).await;
-        if let Ok(_) = self.ev_q.put(Event::ElectionTimeout).await {
-            info!("Candidate {} election timeout", self.core.me);
-        }
-    }
-
     async fn poll(self: Arc<Self>, peer: ClientEnd, 
         args: Arc<RequestVoteArgs>) {
         const TRIES: usize = 5;
@@ -291,7 +288,6 @@ impl Poll {
     async fn check_vote(&self, reply: RequestVoteReply) {
         let voter = reply.voter;
         info!("{self} vote reply from {voter}, vote {}", reply.vote);
-        assert!(voter < self.core.rpc_client.n());
         match reply.vote {
             VoteStatus::Granted => {
                 let _ = self.ev_q.put(Event::GrantVote {
@@ -299,7 +295,7 @@ impl Poll {
                 }).await;
             },
             VoteStatus::Denied { term } => {
-                let myterm = self.core.term.load(Ordering::Acquire);
+                let myterm = self.term;
                 if myterm <= term {
                     let _ = self.ev_q.put(Event::OutdateCandidate {
                         new_term: term
@@ -307,7 +303,7 @@ impl Poll {
                 }
             },
             VoteStatus::Rejected { term } => {
-                let myterm = self.core.term.load(Ordering::Acquire);
+                let myterm = self.term;
                 if myterm < term {
                     let _ = self.ev_q.put(Event::OutdateCandidate {
                         new_term: term
@@ -320,13 +316,13 @@ impl Poll {
 
 impl std::fmt::Display for Candidate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Candidate[{}, term={}]", self.core.me, self.core.term())
+        write!(f, "Candidate[{}, term={}]", self.core.me, self.core.term)
     }
 }
 
 impl std::fmt::Display for Poll {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Candidate[{}, term={}]", self.core.me, self.core.term())
+        write!(f, "Candidate[{}, term={}]", self.me, self.term)
     }
 }
 

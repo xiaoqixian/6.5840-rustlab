@@ -2,7 +2,9 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use crate::{candidate::VoteStatus, event::Event, log::{LogEntry, LogInfo}, raft::RaftCore};
+use std::sync::{atomic::AtomicBool, Arc};
+
+use crate::{candidate::VoteStatus, event::{EvQueue, Event}, log::{LogEntry, LogInfo}, raft::{RaftCore, RaftHandle}};
 use serde::{Serialize, Deserialize};
 
 pub type RequestVoteRes = Result<RequestVoteReply, ()>;
@@ -73,38 +75,21 @@ pub enum QueryEntryReply {
 pub type QueryEntryRes = Result<QueryEntryReply, ()>;
 
 pub struct RpcService {
-    core: RaftCore
+    raft: RaftHandle
 }
 
 impl RpcService {
-    pub fn new(core: RaftCore) -> Self {
-        Self { core }
+    pub fn new(raft: RaftHandle) -> Self {
+        Self { raft }
     }
 }
-
-// macro_rules! build_rpc {
-//     ($name: ident, $arg_ty: ty, $res_ty: ty, $ev: ident) => {
-//         pub async fn $name(&self, args: $arg_ty) -> $res_ty {
-//             if self.core.dead() {
-//                 return Err(());
-//             }
-//             let (tx, rx) = tokio::sync::oneshot::channel();
-//             let ev = Event::$ev {
-//                 args,
-//                 reply_tx: tx
-//             };
-//             self.core.ev_q.just_put(ev).await;
-//             Ok(rx.await.unwrap())
-//         }
-//     }
-// }
 
 #[labrpc_macros::rpc]
 impl RpcService {
     /// The AppendEntries event may not be processed.
     /// For instance, the Raft node may already be dead.
     pub async fn append_entries(&self, args: AppendEntriesArgs) -> AppendEntriesRes {
-        if self.core.dead() {
+        if self.raft.dead() {
             return Err(());
         }
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -112,13 +97,13 @@ impl RpcService {
             args,
             reply_tx: tx
         };
-        self.core.ev_q.just_put(ev).await;
+        self.raft.ev_q.just_put(ev).await;
         Ok(rx.await.unwrap())
     }
 
     /// Request a vote from this raft node.
     pub async fn request_vote(&self, args: RequestVoteArgs) -> RequestVoteRes {
-        if self.core.dead() {
+        if self.raft.dead() {
             return Err(());
         }
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -126,12 +111,12 @@ impl RpcService {
             args,
             reply_tx: tx
         };
-        self.core.ev_q.just_put(ev).await;
+        self.raft.ev_q.just_put(ev).await;
         Ok(rx.await.unwrap())
     }
 
     pub async fn query_entry(&self, args: QueryEntryArgs) -> QueryEntryRes {
-        if self.core.dead() {
+        if self.raft.dead() {
             return Err(());
         }
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -139,7 +124,28 @@ impl RpcService {
             args,
             reply_tx: tx
         };
-        self.core.ev_q.just_put(ev).await;
+        self.raft.ev_q.just_put(ev).await;
         Ok(rx.await.unwrap())
+    }
+}
+
+impl std::fmt::Display for AppendEntriesType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::HeartBeat => write!(f, "HeartBeat"),
+            Self::Entries {..} => write!(f, "AppendEntries")
+        }
+    }
+}
+
+impl std::fmt::Display for AppendEntriesArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} from {}, term = {}", self.entry_type, self.from, self.term)
+    }
+}
+
+impl std::fmt::Display for RequestVoteArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "RequestVote from {}, term = {}", self.from, self.term)
     }
 }

@@ -4,7 +4,7 @@
 
 use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
 
-use crate::{candidate::{Candidate, VoteStatus}, common::{self, RPC_FAIL_RETRY}, event::Event, info, log::{LogInfo, Logs}, raft::RaftCore, role::{RoleEvQueue, Trans}, service::{AppendEntriesArgs, AppendEntriesReply, AppendEntriesType, EntryStatus, QueryEntryArgs, QueryEntryReply, RequestVoteArgs, RequestVoteReply}, utils::Peer, OneTx};
+use crate::{candidate::{Candidate, VoteStatus}, common::{self, RPC_FAIL_RETRY}, event::Event, info, log::{LogInfo, Logs}, raft::RaftCore, role::{RoleEvQueue, Trans}, service::{AppendEntriesArgs, AppendEntriesReply, AppendEntriesType, EntryStatus, QueryEntryArgs, QueryEntryReply, RequestVoteArgs, RequestVoteReply}, utils::Peer, warn, OneTx};
 
 pub struct Leader {
     pub core: RaftCore,
@@ -14,7 +14,8 @@ pub struct Leader {
 }
 
 struct Replicator {
-    core: RaftCore,
+    me: usize,
+    term: usize,
     logs: Logs,
     active: Arc<AtomicBool>,
     peer: Peer,
@@ -103,8 +104,8 @@ impl Replicator {
             };
 
             let args = AppendEntriesArgs {
-                from: self.core.me,
-                term: self.core.term(),
+                from: self.me,
+                term: self.term,
                 entry_type
             };
 
@@ -121,7 +122,7 @@ impl Replicator {
             
             match reply.entry_status {
                 EntryStatus::Stale { term } => {
-                    if term > self.core.term() {
+                    if term > self.term {
                         let _ = self.ev_q.put(Event::Trans(Trans::ToFollower {
                             new_term: Some(term)
                         })).await;
@@ -143,13 +144,14 @@ impl Leader {
 
         // when a node become a leader, it pushes a noop log to its logs,
         // this will be the first log entry in its reign.
-        logs.ld_push_noop(core.term()).await;
+        logs.ld_push_noop(core.term).await;
 
         // spawn heartbeat senders
         let active = Arc::new(AtomicBool::new(true));
         for peer in core.rpc_client.peers() {
             tokio::spawn(Replicator {
-                core: core.clone(),
+                me: core.me,
+                term: core.term,
                 logs: logs.clone(),
                 active: active.clone(),
                 peer: Peer::new(peer, active.clone()),
@@ -176,6 +178,14 @@ impl Leader {
             Event::Trans(Trans::ToLeader) => 
                 panic!("Leader receives a Trans::ToLeader"),
             Event::Trans(to) => return Some(to),
+            
+            Event::GetState(tx) => {
+                tx.send((self.core.term, true)).unwrap();
+            },
+
+            Event::StartCmd { cmd, reply_tx } => {
+                self.start_cmd(cmd, reply_tx).await;
+            }
 
             Event::AppendEntries {args, reply_tx} => {
                 info!("{self}: AppendEntries from {}, term={}", args.from, args.term);
@@ -189,10 +199,6 @@ impl Leader {
                 info!("{self}: QueryEntry, log_info = {}", args.log_info);
                 self.query_entry(args, reply_tx).await;
             }
-            
-            Event::GetState(tx) => {
-                tx.send((self.core.term(), true)).unwrap();
-            }
 
             ev => panic!("Unexpected event for a leader: {ev}")
         }
@@ -203,10 +209,18 @@ impl Leader {
         self.active.store(false, Ordering::Release);
     }
 
+    async fn start_cmd(&self, cmd: Vec<u8>, reply_tx: OneTx<Option<(usize, usize)>>) {
+        let term = self.core.term;
+        let cmd_idx = self.logs.ld_push_cmd(term, cmd).await;
+        if let Err(_) = reply_tx.send(Some((cmd_idx, term))) {
+            warn!("start_cmd() reply failed");
+        }
+    }
+
     async fn append_entries(&self, args: AppendEntriesArgs, reply_tx: 
         OneTx<AppendEntriesReply>) 
     {
-        let myterm = self.core.term();
+        let myterm = self.core.term;
 
         let entry_status = if args.term < myterm {
             EntryStatus::Stale {
@@ -228,10 +242,10 @@ impl Leader {
         reply_tx.send(reply).unwrap();
     }
 
-    async fn request_vote(&self, args: RequestVoteArgs, reply_tx: 
+    async fn request_vote(&mut self, args: RequestVoteArgs, reply_tx: 
         OneTx<RequestVoteReply>)
     {
-        let myterm = self.core.term();
+        let myterm = self.core.term;
         
         let vote = if args.term <= myterm {
             VoteStatus::Denied { term: myterm }
@@ -241,7 +255,7 @@ impl Leader {
             })).await;
             
             if self.logs.up_to_date(&args.last_log).await {
-                *self.core.vote_for.lock().await = Some(args.from);
+                self.core.vote_for = Some(args.from);
                 VoteStatus::Granted
             } else {
                 // even myterm here is outdated, it makes no difference
@@ -269,12 +283,12 @@ impl Leader {
 
 impl std::fmt::Display for Leader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Leader[{}, term={}]", self.core.me, self.core.term())
+        write!(f, "Leader[{}, term={}]", self.core.me, self.core.term)
     }
 }
 
 impl std::fmt::Display for Replicator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Repl[{}->{}]", self.core.me, self.peer.to())
+        write!(f, "Repl[{}->{}]", self.me, self.peer.to())
     }
 }

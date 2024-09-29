@@ -19,6 +19,10 @@ pub const TO_LEADER: Event = Event::Trans(Trans::ToLeader);
 
 pub enum Event {
     GetState(OneTx<(usize, bool)>),
+    StartCmd {
+        cmd: Vec<u8>,
+        reply_tx: OneTx<Option<(usize, usize)>>
+    },
     AppendEntries {
         args: AppendEntriesArgs,
         reply_tx: OneTx<AppendEntriesReply>,
@@ -105,6 +109,7 @@ impl Display for Event {
         write!(f, "Event::")?;
         match self {
             Self::GetState(_) => write!(f, "GetState"),
+            Self::StartCmd {..} => write!(f, "StartCmd"),
             Self::AppendEntries {..} => write!(f, "AppendEntries"),
             Self::RequestVote {..} => write!(f, "RequestVote"),
             Self::QueryEntry {..} => write!(f, "QueryEntry"),

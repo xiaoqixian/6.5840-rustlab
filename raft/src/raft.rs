@@ -5,29 +5,33 @@
 use std::{sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, Arc}, time::Duration};
 
 use labrpc::client::Client;
-use tokio::sync::Mutex;
 
 use crate::{
-    event::{EvQueue, Event}, follower::Follower, info, log::{Logs, LogsImpl}, msg::ApplyMsg, persist::Persister, role::Role, service::RpcService, UbRx, UbTx
+    event::{EvQueue, Event}, follower::Follower, info, log::Logs, msg::ApplyMsg, persist::Persister, role::Role, service::RpcService, UbRx, UbTx
 };
 
-pub(crate) struct RaftCoreImpl {
+pub(crate) struct RaftCore {
     pub me: usize,
-    pub dead: AtomicBool,
+    pub dead: Arc<AtomicBool>,
     pub rpc_client: Client,
     pub persister: Persister,
     pub apply_ch: UbTx<ApplyMsg>,
-    pub term: AtomicUsize,
+    pub term: usize,
     // ev_q is shared
     pub ev_q: Arc<EvQueue>,
-    pub vote_for: Mutex<Option<usize>>
+    pub vote_for: Option<usize>
 }
 
-pub(crate) type RaftCore = Arc<RaftCoreImpl>;
+#[derive(Clone)]
+pub(crate) struct RaftHandle {
+    pub ev_q: Arc<EvQueue>,
+    dead: Arc<AtomicBool>
+}
 
 // The Raft object to implement a single raft node.
 pub struct Raft {
-    core: RaftCore,
+    ev_q: Arc<EvQueue>,
+    dead: Arc<AtomicBool>
 }
 
 /// Raft implementation.
@@ -58,30 +62,37 @@ impl Raft {
 
         let (ev_ch_tx, ev_ch_rx) = tokio::sync::mpsc::unbounded_channel();
         let ev_q = Arc::new(EvQueue::new(ev_ch_tx, me));
+        let dead = Arc::<AtomicBool>::default();
 
-        let core = RaftCoreImpl {
+        let core = RaftCore {
             me,
-            dead: AtomicBool::default(),
+            dead: dead.clone(),
             rpc_client,
             persister,
             apply_ch,
-            term: Default::default(),
-            ev_q,
-            vote_for: Default::default()
+            term: 0,
+            ev_q: ev_q.clone(),
+            vote_for: None
         };
-        let core = Arc::new(core);
-        let logs = LogsImpl::new(core.clone());
+
+        let handle = RaftHandle {
+            ev_q: ev_q.clone(),
+            dead: dead.clone()
+        };
+
+        let logs = Logs::new();
 
         core.rpc_client.add_service("RpcService".to_string(), 
-            Box::new(RpcService::new(core.clone()))).await;
+            Box::new(RpcService::new(handle))).await;
 
-        let flw = Follower::new(core.clone(), logs).await;
+        let flw = Follower::new(core, logs).await;
         tokio::spawn(Self::process_ev(Role::Follower(flw), ev_ch_rx));
 
         info!("Raft instance {me} started.");
 
         Self {
-            core,
+            ev_q,
+            dead
         }
     }
 
@@ -90,7 +101,7 @@ impl Raft {
     pub async fn get_state(&self) -> (usize, bool) {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let ev = Event::GetState(tx);
-        self.core.ev_q.just_put(ev).await;
+        self.ev_q.just_put(ev).await;
         rx.await.unwrap()
     }
 
@@ -128,13 +139,19 @@ impl Raft {
     /// Some((A, B)), where A is the index that the command will appear
     /// at if it's ever committed, B is the current term.
     /// If it does not, it should just return None.
-    pub async fn start(&mut self, _command: Vec<u8>) -> Option<(usize, usize)> {
-        None
+    pub async fn start(&self, command: Vec<u8>) -> Option<(usize, usize)> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let ev = Event::StartCmd {
+            cmd: command,
+            reply_tx: tx
+        };
+        self.ev_q.just_put(ev).await;
+        rx.await.unwrap()
     }
 
     /// Kill the server.
     pub async fn kill(&self) {
-        self.core.dead.store(true, Ordering::Release);
+        self.dead.store(true, Ordering::Release);
     }
 
     async fn process_ev(mut role: Role, mut ev_ch_rx: UbRx<Event>) {
@@ -144,31 +161,15 @@ impl Raft {
     }
 }
 
-impl std::fmt::Display for Raft {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Raft {}", self.core.me)
-    }
-}
-impl std::fmt::Display for RaftCoreImpl {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Raft {}", self.me)
-    }
-}
-
-impl RaftCoreImpl {
+impl RaftHandle {
     #[inline]
     pub fn dead(&self) -> bool {
         self.dead.load(Ordering::Acquire)
     }
-
-    #[inline]
-    pub fn term(&self) -> usize {
-        self.term.load(Ordering::Acquire)
-    }
-
-    #[inline]
-    pub fn set_term(&self, term: usize) {
-        self.term.store(term, Ordering::Relaxed);
-    }
 }
 
+impl std::fmt::Display for RaftCore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[Raft {},term={}]", self.me, self.term)
+    }
+}

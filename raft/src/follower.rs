@@ -53,15 +53,19 @@ impl Follower {
             Event::Trans(to) => return Some(to),
 
             Event::GetState(tx) => {
-                tx.send((self.core.term(), false)).unwrap();
+                tx.send((self.core.term, false)).unwrap();
             },
 
+            Event::StartCmd { reply_tx, .. } => {
+                let _ = reply_tx.send(None);
+            }
+
             Event::AppendEntries {args, reply_tx} => {
-                info!("{self}: AppendEntries from {}, term={}", args.from, args.term);
+                info!("{self}: {}", args);
                 self.append_entries(args, reply_tx).await;
             },
             Event::RequestVote {args, reply_tx} => {
-                info!("{self}: RequestVote from {}, term={}", args.from, args.term);
+                info!("{self}: {}", args);
                 self.request_vote(args, reply_tx).await;
             },
             Event::QueryEntry {args, reply_tx} => {
@@ -84,17 +88,17 @@ impl Follower {
         self.heartbeat_timer.stop();
     }
 
-    async fn append_entries(&self, args: AppendEntriesArgs, reply_tx: 
+    async fn append_entries(&mut self, args: AppendEntriesArgs, reply_tx: 
         OneTx<AppendEntriesReply>) 
     {
-        let myterm = self.core.term();
+        let myterm = self.core.term;
         let entry_status = if args.term < myterm {
             EntryStatus::Stale {
                 term: myterm
             }
         } else {
             if myterm < args.term {
-                self.core.set_term(args.term);
+                self.core.term = args.term;
             }
             // TODO: actually append entries
             self.heartbeat_timer.clone().restart();
@@ -108,22 +112,22 @@ impl Follower {
         reply_tx.send(reply).unwrap();
     }
 
-    async fn request_vote(&self, args: RequestVoteArgs, reply_tx: 
+    async fn request_vote(&mut self, args: RequestVoteArgs, reply_tx: 
         OneTx<RequestVoteReply>) 
     {
-        let myterm = self.core.term();
+        let myterm = self.core.term;
 
         let vote = if args.term <= myterm {
-            match self.core.vote_for.lock().await.clone() {
-                Some(vote_for) if vote_for == args.from => {
+            match &self.core.vote_for {
+                Some(vote_for) if *vote_for == args.from => {
                     VoteStatus::Granted
                 },
                 _ => VoteStatus::Rejected { term: myterm }
             }
         } else {
-            self.core.set_term(args.term);
+            self.core.term = args.term;
             if self.logs.up_to_date(&args.last_log).await {
-                *self.core.vote_for.lock().await = Some(args.from);
+                self.core.vote_for = Some(args.from);
                 self.heartbeat_timer.clone().restart();
                 VoteStatus::Granted
             } else {
@@ -194,6 +198,6 @@ impl Timer {
 
 impl std::fmt::Display for Follower {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Follower[{}, term={}]", self.core.me, self.core.term())
+        write!(f, "Follower[{}, term={}]", self.core.me, self.core.term)
     }
 }

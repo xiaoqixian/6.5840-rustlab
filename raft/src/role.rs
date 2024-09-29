@@ -2,7 +2,6 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use crate::event::{EvQueue, Event};
@@ -53,16 +52,16 @@ impl RoleEvQueue {
     }
 }
 
-macro_rules! is_role {
-    ($name: ident, $role: ident) => {
-        pub fn $name(&self) -> bool {
-            match self {
-                Self::$role(_) => true,
-                _ => false
-            }
-        }
-    }
-}
+// macro_rules! is_role {
+//     ($name: ident, $role: ident) => {
+//         pub fn $name(&self) -> bool {
+//             match self {
+//                 Self::$role(_) => true,
+//                 _ => false
+//             }
+//         }
+//     }
+// }
 
 impl Default for Role {
     fn default() -> Self {
@@ -89,22 +88,22 @@ impl Role {
             // only time they need to change the term is when 
             // they need to become a follower.
             *self = match (role, trans) {
-                (Self::Follower(flw), Trans::ToCandidate) => {
-                    flw.core.term.fetch_add(1, Ordering::AcqRel);
+                (Self::Follower(mut flw), Trans::ToCandidate) => {
+                    flw.core.term += 1;
                     Self::Candidate(Candidate::from_follower(flw).await)
                 },
                 (Self::Candidate(cd), Trans::ToLeader) => {
                     Self::Leader(Leader::from_candidate(cd).await)
                 },
-                (Self::Candidate(cd), Trans::ToFollower {new_term}) => {
+                (Self::Candidate(mut cd), Trans::ToFollower {new_term}) => {
                     if let Some(new_term) = new_term {
-                        cd.core.set_term(new_term);
+                        cd.core.term = new_term;
                     }
                     Self::Follower(Follower::from_candidate(cd).await)
                 },
-                (Self::Leader(ld), Trans::ToFollower {new_term}) => {
+                (Self::Leader(mut ld), Trans::ToFollower {new_term}) => {
                     if let Some(new_term) = new_term {
-                        ld.core.set_term(new_term);
+                        ld.core.term = new_term;
                     }
                     Self::Follower(Follower::from_leader(ld).await)
                 },
@@ -123,9 +122,9 @@ impl Role {
         }
     }
 
-    is_role!(is_follower, Follower);
-    is_role!(is_candidate, Candidate);
-    is_role!(is_leader, Leader);
+    // is_role!(is_follower, Follower);
+    // is_role!(is_candidate, Candidate);
+    // is_role!(is_leader, Leader);
 }
 
 impl std::fmt::Display for Role {

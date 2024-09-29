@@ -2,12 +2,12 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use std::{ops::Range, sync::{atomic::{AtomicUsize, Ordering}, Arc}};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-use crate::{raft::RaftCore, service::AppendEntriesType};
+use crate::raft::RaftCore;
 
 #[derive(PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub struct LogInfo {
@@ -19,12 +19,12 @@ pub struct LogInfo {
 /// 1. Noop: just for pushing in a log entry;
 #[derive(Clone, Serialize, Deserialize)]
 pub enum LogType {
-    // Cmd {
-    //     content: Vec<u8>,
-    //     // each command has an unique index,
-    //     // which is different from the log index.
-    //     index: usize
-    // },
+    Cmd {
+        content: Vec<u8>,
+        // each command has an unique index,
+        // which is different from the log index.
+        index: usize
+    },
     Noop
 }
 
@@ -38,9 +38,9 @@ pub struct LogEntry {
 /// A LogPack can be
 /// 1. A list of entries
 /// 2. A compressed snapshot
-pub enum LogPack {
-    Entries(Vec<LogEntry>),
-}
+// pub enum LogPack {
+//     Entries(Vec<LogEntry>),
+// }
 
 /// A list of log entries, actually a wrapper of Vec<LogEntry>.
 /// As with snapshot, the first log in the list may not be the 
@@ -48,10 +48,14 @@ pub enum LogPack {
 #[derive(Default)]
 struct LogList {
     logs: Vec<LogEntry>,
-    offset: usize
+    offset: usize,
+    // record the number of commands in the log list, including the ones 
+    // in the snapshot. So the command indices returned will be consecutive.
+    cmd_cnt: usize
 }
 
-pub struct LogsImpl {
+#[derive(Clone)]
+pub struct Logs {
     // last log index
     // lli: Arc<AtomicUsize>,
     // last committed log index
@@ -60,27 +64,23 @@ pub struct LogsImpl {
     // lai: Arc<AtomicUsize>,
 
     // logs is ensured to be always not empty
-    logs: RwLock<LogList>,
-    core: RaftCore
+    logs: Arc<RwLock<LogList>>
 }
 
-pub type Logs = Arc<LogsImpl>;
-
-impl LogsImpl {
+impl Logs {
     const EMPTY_LOGS: &'static str = "Logs log list should not be empty";
 
-    pub fn new(core: RaftCore) -> Arc<Self> {
-        Arc::new(Self {
+    pub fn new() -> Self {
+        Self {
             // lli: Default::default(),
             // lci: Default::default(),
             // lai: Default::default(),
             logs: {
                 let mut logs = LogList::default();
                 logs.push(LogEntry { index: 0, term: 0, log_type: LogType::Noop });
-                RwLock::new(logs)
+                Arc::new(RwLock::new(logs))
             },
-            core
-        })
+        }
     }
 
     pub async fn last_log_info(&self) -> LogInfo {
@@ -126,6 +126,23 @@ impl LogsImpl {
             term,
             log_type: LogType::Noop
         });
+    }
+
+    /// Push a cmd entry to the list, return the cmd index.
+    pub async fn ld_push_cmd(&self, term: usize, cmd: Vec<u8>) -> usize {
+        let mut logs = self.logs.write().await;
+        let lli = logs.last().unwrap().index;
+        let cmd_idx = logs.cmd_cnt;
+        logs.cmd_cnt += 1;
+        logs.push(LogEntry {
+            index: lli + 1,
+            term,
+            log_type: LogType::Cmd {
+                content: cmd,
+                index: cmd_idx
+            }
+        });
+        cmd_idx
     }
 
     pub async fn up_to_date(&self, log_info: &LogInfo) -> bool {
