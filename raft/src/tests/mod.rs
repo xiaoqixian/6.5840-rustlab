@@ -43,7 +43,7 @@ struct Config<T> {
     n: usize,
     net: Network,
     bytes: usize,
-    nodes: Vec<Node>,
+    pub nodes: Vec<Node>,
     logs: Arc<Mutex<Logs<T>>>,
     
     start: std::time::Instant,
@@ -67,8 +67,14 @@ struct Tester<T> {
     finished: Arc<AtomicBool>
 }
 
+trait WantedCmd: Eq + Clone + Serialize + DeserializeOwned + Display 
+    + Debug + Send + 'static {}
+impl<T> WantedCmd for T 
+where T: Eq + Clone + Serialize + DeserializeOwned + Display 
+    + Debug + Send + 'static {}
+
 impl<T> Tester<T> 
-    where T: Eq + Clone + Serialize + DeserializeOwned + Display + Debug + Send + 'static
+    where T: WantedCmd
 {
     pub async fn new(n: usize, reliable: bool, snapshot: bool, time_limit: Duration) -> Self {
         let config = Config {
@@ -90,7 +96,7 @@ impl<T> Tester<T>
             start: std::time::Instant::now()
         };
         
-        let tester = Self{ 
+        let tester = Self { 
             config: Arc::new(RwLock::new(config)),
             time_limit,
             finished: Default::default()
@@ -104,7 +110,7 @@ impl<T> Tester<T>
     }
 
     async fn begin<D: std::fmt::Display>(&self, desc: D) {
-        println!("{desc}...");
+        println!("{}", format!("{desc}...").truecolor(178,225,167));
         self.config.write().await.start = std::time::Instant::now();
         
         let time_limit = self.time_limit.clone();
@@ -113,7 +119,8 @@ impl<T> Tester<T>
             time_limit.as_secs());
         tokio::spawn(async move {
             tokio::time::sleep(time_limit).await;
-            if !finished.load(Ordering::Acquire) {
+
+            if !finished.swap(true, Ordering::SeqCst) {
                 fatal!("{msg}");
             }
         });
@@ -131,6 +138,7 @@ impl<T> Tester<T>
         greet!(" ... Passed --");
         greet!(" {}ms, {} peers, {} rpc, {} bytes, {} cmds", 
             t.as_millis(), config.n, nrpc, nbytes, ncmd);
+        self.cleanup().await;
     }
 
     async fn cleanup(&self) {
@@ -265,7 +273,7 @@ impl<T> Tester<T>
     /// Commit a command, ask every node if it is a leader, 
     /// if is, ask it to commit a command.
     /// If the command is successfully committed, return its index.
-    async fn commit_one(&self, cmd: T, expected_servers: usize, retry: bool) -> Option<usize> {
+    async fn submit_cmd(&self, cmd: T, expected_servers: usize, retry: bool) -> Option<usize> {
         let cmd_bin = bincode::serialize(&cmd).unwrap();
 
         tokio::time::timeout(Duration::from_secs(10), async move {
@@ -337,6 +345,42 @@ impl<T> Tester<T>
         (cnt, cmd)
     }
 
+    /// Wait a command with `index` to be committed by at least `target` number
+    /// of nodes.
+    /// If start_term.is_some(), the waited command is must be started at that 
+    /// specific term.
+    async fn wait(&self, index: usize, target: usize, start_term: Option<usize>) -> Option<T> {
+        let mut short_break = Duration::from_millis(10);
+        for _ in 0..30 {
+            let (n, _) = self.n_committed(index).await;
+            if n >= target {
+                break
+            }
+
+            tokio::time::sleep(short_break).await;
+            if short_break < Duration::from_secs(1) {
+                short_break *= 2;
+            }
+
+            if let Some(start_term) = start_term {
+                for raft in self.config.read().await.nodes.iter()
+                    .filter_map(|node| node.raft.as_ref())
+                {
+                    let (term, _) = raft.get_state().await;
+                    if term > start_term {
+                        return None;
+                    }
+                }
+            }
+        }
+
+        let (n, cmd) = self.n_committed(index).await;
+        if n < target {
+            fatal!("Only {n} nodes committed command with index {index}, expected {target}");
+        }
+        cmd
+    }
+
     async fn ingest_snapshot(&self, id: usize, snapshot: Vec<u8>, index: Option<usize>) {
 
     }
@@ -357,10 +401,13 @@ impl<T> Tester<T>
     async fn byte_cnt(&self) -> u64 {
         self.config.read().await.net.byte_cnt()
     }
+    async fn rpc_cnt(&self) -> u32 {
+        self.config.read().await.net.rpc_cnt()
+    }
 }
 
 impl<T> Applier<T> 
-    where T: Eq + Clone + Serialize + DeserializeOwned + Display + Debug + Send + 'static
+    where T: WantedCmd
 {
     async fn run(mut self, snap: bool) {
         while let Some(msg) = self.apply_ch.recv().await {

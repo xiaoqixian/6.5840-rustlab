@@ -45,6 +45,7 @@ async fn test3a_initial_election() {
     }
 
     tester.check_one_leader().await;
+
     tester.end().await;
 }
 
