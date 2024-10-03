@@ -2,9 +2,7 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use std::{fmt::Display, sync::atomic::{AtomicUsize, Ordering}};
-
-use tokio::sync::RwLock;
+use std::{fmt::Display, sync::{atomic::{AtomicUsize, Ordering}, RwLock}};
 
 use crate::{
     role::Trans, service::{
@@ -36,6 +34,7 @@ pub enum Event {
         reply_tx: OneTx<QueryEntryReply>
     },
     Trans(Trans),
+    Kill,
 
     // follower related events
     HeartBeatTimeout,
@@ -49,7 +48,10 @@ pub enum Event {
         new_term: usize
     },
 
-    ElectionTimeout
+    ElectionTimeout,
+
+    // leader related events
+    UpdateCommit(usize),
 }
 
 pub struct EvQueue {
@@ -69,16 +71,15 @@ impl EvQueue {
 
     /// put without pass key, only event from outside can 
     /// be put in this way, like Event::GetState.
-    pub async fn just_put(&self, ev: Event) {
-        let ev_ch = self.ev_ch.read().await;
-        if let Err(_) = ev_ch.send(ev) {
-            warn!("EvQueue just_put failed");
-        }
+    /// When the raft is killed, the ev channel will be closed, 
+    /// then the Err(ev) will be returned.
+    pub fn just_put(&self, ev: Event) -> Result<(), Event> {
+        self.ev_ch.read().unwrap().send(ev).map_err(|e| e.0)
     }
 
     /// Put an event to the event queue, return Err(event) 
     /// if not success.
-    pub async fn put(&self, ev: Event, key: usize) -> Result<(), Event> {
+    pub fn put(&self, ev: Event, key: usize) -> Result<(), Event> {
         // reject events with unmatched key
         if self.key.load(Ordering::Acquire) != key {
             warn!("{self}: Discard event {ev} for unmatched key");
@@ -87,12 +88,12 @@ impl EvQueue {
 
         match ev {
             Event::Trans(to) => {
-                let ev_ch = self.ev_ch.write().await;
+                let ev_ch = self.ev_ch.write().unwrap();
                 ev_ch.send(Event::Trans(to)).unwrap();
                 self.key.fetch_add(1, Ordering::AcqRel);
             },
             ev => {
-                let ev_ch = self.ev_ch.read().await;
+                let ev_ch = self.ev_ch.read().unwrap();
                 ev_ch.send(ev).unwrap();
             }
         }
@@ -104,11 +105,12 @@ impl EvQueue {
     }
 }
 
-impl Display for Event {
+impl std::fmt::Display for Event {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Event::")?;
         match self {
             Self::GetState(_) => write!(f, "GetState"),
+            Self::Kill => write!(f, "Kill"),
             Self::StartCmd {..} => write!(f, "StartCmd"),
             Self::AppendEntries {..} => write!(f, "AppendEntries"),
             Self::RequestVote {..} => write!(f, "RequestVote"),
@@ -117,7 +119,27 @@ impl Display for Event {
             Self::HeartBeatTimeout => write!(f, "HeartBeatTimeout"),
             Self::GrantVote {..} => write!(f, "GrantVote"),
             Self::OutdateCandidate {..} => write!(f, "OutdateCandidate"),
-            Self::ElectionTimeout => write!(f, "ElectionTimeout")
+            Self::ElectionTimeout => write!(f, "ElectionTimeout"),
+            Self::UpdateCommit(lci) => write!(f, "UpdateCommit({lci})")
+        }
+    }
+}
+impl std::fmt::Debug for Event {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Event::")?;
+        match self {
+            Self::GetState(_) => write!(f, "GetState"),
+            Self::Kill => write!(f, "Kill"),
+            Self::StartCmd {..} => write!(f, "StartCmd"),
+            Self::AppendEntries {..} => write!(f, "AppendEntries"),
+            Self::RequestVote {..} => write!(f, "RequestVote"),
+            Self::QueryEntry {..} => write!(f, "QueryEntry"),
+            Self::Trans(to) => write!(f, "Trans({to:?})"),
+            Self::HeartBeatTimeout => write!(f, "HeartBeatTimeout"),
+            Self::GrantVote {..} => write!(f, "GrantVote"),
+            Self::OutdateCandidate {..} => write!(f, "OutdateCandidate"),
+            Self::ElectionTimeout => write!(f, "ElectionTimeout"),
+            Self::UpdateCommit(lci) => write!(f, "UpdateCommit({lci})")
         }
     }
 }
