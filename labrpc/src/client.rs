@@ -127,7 +127,8 @@ impl ClientEnd {
             req,
             reply_tx: tx
         };
-        // the network is closed.
+        // if the network is closed, the client end should 
+        // consider itself disconnected.
         if let Err(_) = self.net_tx.send(msg) {
             return Err(DISCONNECTED);
         }

@@ -33,6 +33,7 @@ struct NetworkCore {
     byte_cnt: AtomicU64,
     reliable: AtomicBool,
     long_delay: AtomicBool,
+    closed: AtomicBool
 }
 
 pub struct Network {
@@ -63,6 +64,10 @@ impl Network {
         }
     }
 
+    pub fn close(&self) {
+        self.core.closed.store(true, Ordering::Relaxed);
+    }
+
     #[inline]
     pub fn reliable(self, val: bool) -> Self {
         self.set_reliable(val);
@@ -90,6 +95,8 @@ impl Network {
     /// server out of the network.
     /// So this can be used to simulate a restart of a node.
     pub async fn make_client(&mut self, idx: usize) -> Client {
+        debug_assert!(!self.core.closed.load(Ordering::Relaxed),
+            "make_client: the network is closed");
         assert!(idx < self.n, "Invalid index {idx}, 
             the network group size is {}", self.n);
 
@@ -132,6 +139,11 @@ impl NetworkCore {
             self.byte_cnt.fetch_add(bytes, Ordering::AcqRel);
 
             tokio::spawn(self.clone().process_msg(msg));
+
+            if self.closed.load(Ordering::Relaxed) {
+                rx.close();
+                break;
+            }
         }
     }
 
