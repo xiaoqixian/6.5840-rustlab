@@ -1,51 +1,24 @@
-// Date:   Thu Sep 05 09:41:37 2024
+// Date:   Thu Oct 03 19:50:34 2024
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use std::{sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, Arc}, time::Duration};
+use std::time::Duration;
 
 use crate::{
-    candidate::{Candidate, VoteStatus}, common, event::{Event, TO_CANDIDATE}, info, leader::Leader, log::Logs, raft::RaftCore, role::{RoleEvQueue, Trans}, service::{AppendEntriesArgs, AppendEntriesReply, EntryStatus, QueryEntryArgs, QueryEntryReply, RequestVoteArgs, RequestVoteReply}, warn, OneTx
+    candidate::VoteStatus, common, event::{Event, TO_CANDIDATE}, info, logs::Logs, raft::RaftCore, role::{RoleCore, RoleEvQueue, Trans}, service::{AppendEntriesArgs, AppendEntriesReply, EntryStatus, QueryEntryArgs, QueryEntryReply, RequestVoteArgs, RequestVoteReply}, OneTx
 };
 
-struct Timer {
-    key: AtomicUsize,
-    active: AtomicBool,
-    ev_q: RoleEvQueue,
-    id: usize,
-}
+mod timer;
+use timer::Timer;
 
 pub struct Follower {
-    pub core: RaftCore,
-    pub logs: Logs,
-    pub ev_q: RoleEvQueue,
-    heartbeat_timer: Arc<Timer>
+    core: RaftCore,
+    logs: Logs,
+    ev_q: RoleEvQueue,
+    hb_timer: Timer
 }
 
 impl Follower {
-    pub async fn new(core: RaftCore, logs: Logs) -> Self {
-        let ev_q = RoleEvQueue::new(core.ev_q.clone(), 0);
-        Self::new_with_ev_q(core, logs, ev_q).await
-    }
-
-    pub async fn new_with_ev_q(core: RaftCore, logs: Logs, ev_q: RoleEvQueue) -> Self {
-        let heartbeat_timer = Timer::new(ev_q.clone(), core.me);
-        Self {
-            core,
-            logs,
-            ev_q,
-            heartbeat_timer
-        }
-    }
-
-    pub async fn from_candidate(cd: Candidate) -> Self {
-        Self::new_with_ev_q(cd.core, cd.logs, cd.ev_q.transfer()).await
-    }
-
-    pub async fn from_leader(ld: Leader) -> Self {
-        Self::new_with_ev_q(ld.core, ld.logs, ld.ev_q.transfer()).await
-    }
-
     pub async fn process(&mut self, ev: Event) -> Option<Trans> {
         match ev {
             Event::Trans(Trans::ToFollower {..}) => 
@@ -76,7 +49,7 @@ impl Follower {
             // follower related events
             Event::HeartBeatTimeout => {
                 info!("{}: HeartBeatTimeout", self);
-                let _ = self.ev_q.put(TO_CANDIDATE).await;
+                let _ = self.ev_q.put(TO_CANDIDATE);
             }
 
             ev => panic!("Unexpected event for a follower: {ev}")
@@ -84,8 +57,8 @@ impl Follower {
         None
     }
 
-    pub async fn stop(&mut self) {
-        self.heartbeat_timer.stop();
+    pub fn stop(self) -> RoleCore {
+        self.into()
     }
 
     async fn append_entries(&mut self, args: AppendEntriesArgs, reply_tx: 
@@ -101,7 +74,7 @@ impl Follower {
                 self.core.term = args.term;
             }
             // TODO: actually append entries
-            self.heartbeat_timer.clone().restart();
+            self.hb_timer.reset();
             EntryStatus::Confirmed
         };
         let reply = AppendEntriesReply {
@@ -126,9 +99,9 @@ impl Follower {
             }
         } else {
             self.core.term = args.term;
-            if self.logs.up_to_date(&args.last_log).await {
+            if self.logs.up_to_date(&args.last_log) {
                 self.core.vote_for = Some(args.from);
-                self.heartbeat_timer.clone().restart();
+                self.hb_timer.reset();
                 VoteStatus::Granted
             } else {
                 VoteStatus::Rejected { term: myterm }
@@ -143,56 +116,46 @@ impl Follower {
     }
 
     async fn query_entry(&self, args: QueryEntryArgs, reply_tx: OneTx<QueryEntryReply>) {
-        let reply = if self.logs.log_exist(&args.log_info).await {
+        let reply = if self.logs.log_exist(&args.log_info) {
             QueryEntryReply::Exist
         } else { QueryEntryReply::NotExist };
         reply_tx.send(reply).unwrap();
     }
 }
 
-impl Timer {
-    fn new(ev_q: RoleEvQueue, id: usize) -> Arc<Self> {
-        let inst = Self {
-            key: AtomicUsize::new(0),
-            active: AtomicBool::new(true),
-            ev_q,
-            id
+impl From<RoleCore> for Follower {
+    fn from(core: RoleCore) -> Self {
+        let hb_timer = {
+            let hb_timeout = {
+                let ev_q = core.ev_q.clone();
+                move || {
+                    let _ = ev_q.put(Event::HeartBeatTimeout);
+                }
+            };
+
+            let hb_gen = || {
+                use rand::Rng;
+                let ms = rand::thread_rng().gen_range(common::HEARTBEAT_TIMEOUT);
+                Duration::from_millis(ms)
+            };
+            Timer::new(hb_timeout, hb_gen)
         };
-        let inst = Arc::new(inst);
-        let d = Self::gen_d();
-        tokio::spawn(inst.clone().round(d, 0));
-        inst
-    }
-    
-    async fn round(self: Arc<Self>, d: Duration, round_key: usize) {
-        info!("Follower {} heartbeat timeout after {}ms", self.id, d.as_millis());
-        tokio::time::sleep(d).await;
-        if !self.stopped() && round_key == self.key.load(Ordering::Acquire) {
-            info!("Follower {} heartbeat timeout", self.id);
-            if let Err(_) = self.ev_q.put(Event::HeartBeatTimeout).await {
-                warn!("Timer put HeartBeatTimeout failed");
-            }
+        Self {
+            core: core.raft_core,
+            logs: core.logs,
+            ev_q: core.ev_q,
+            hb_timer
         }
     }
+}
 
-    fn restart(self: Arc<Self>) {
-        let d = Self::gen_d();
-        if !self.stopped() {
-            let key = self.key.fetch_add(1, Ordering::AcqRel) + 1;
-            tokio::spawn(self.clone().round(d, key));
+impl Into<RoleCore> for Follower {
+    fn into(self) -> RoleCore {
+        RoleCore {
+            raft_core: self.core,
+            logs: self.logs,
+            ev_q: self.ev_q.transfer()
         }
-    }
-
-    fn stop(&self) {
-        self.active.store(false, Ordering::Release);
-    }
-
-    fn stopped(&self) -> bool {
-        !self.active.load(Ordering::Acquire)
-    }
-
-    fn gen_d() -> Duration {
-        common::gen_rand_duration(common::HEARTBEAT_TIMEOUT)
     }
 }
 

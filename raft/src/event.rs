@@ -9,11 +9,12 @@ use crate::{
         AppendEntriesArgs, AppendEntriesReply, 
         QueryEntryArgs, QueryEntryReply, 
         RequestVoteArgs, RequestVoteReply
-    }, warn, OneTx, UbTx
+    }, OneTx, UbTx
 };
 
 pub const TO_CANDIDATE: Event = Event::Trans(Trans::ToCandidate);
 pub const TO_LEADER: Event = Event::Trans(Trans::ToLeader);
+pub const TO_FOLLOWER: Event = Event::Trans(Trans::ToFollower);
 
 pub enum Event {
     GetState(OneTx<(usize, bool)>),
@@ -52,6 +53,10 @@ pub enum Event {
 
     // leader related events
     UpdateCommit(usize),
+
+    StaleLeader {
+        new_term: usize
+    }
 }
 
 pub struct EvQueue {
@@ -80,28 +85,32 @@ impl EvQueue {
     /// Put an event to the event queue, return Err(event) 
     /// if not success.
     pub fn put(&self, ev: Event, key: usize) -> Result<(), Event> {
-        // reject events with unmatched key
-        if self.key.load(Ordering::Acquire) != key {
-            warn!("{self}: Discard event {ev} for unmatched key");
-            return Err(ev);
-        }
-
         match ev {
             Event::Trans(to) => {
+                let ev = Event::Trans(to);
                 let ev_ch = self.ev_ch.write().unwrap();
-                ev_ch.send(Event::Trans(to)).unwrap();
-                self.key.fetch_add(1, Ordering::AcqRel);
+                if self.key() != key {
+                    Err(ev)
+                } else {
+                    ev_ch.send(ev).unwrap();
+                    self.key.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                }
             },
             ev => {
                 let ev_ch = self.ev_ch.read().unwrap();
-                ev_ch.send(ev).unwrap();
+                if self.key() != key {
+                    Err(ev)
+                } else {
+                    ev_ch.send(ev).unwrap();
+                    Ok(())
+                }
             }
         }
-        Ok(())
     }
 
     pub fn key(&self) -> usize {
-        self.key.load(Ordering::Acquire)
+        self.key.load(Ordering::SeqCst)
     }
 }
 
@@ -120,27 +129,14 @@ impl std::fmt::Display for Event {
             Self::GrantVote {..} => write!(f, "GrantVote"),
             Self::OutdateCandidate {..} => write!(f, "OutdateCandidate"),
             Self::ElectionTimeout => write!(f, "ElectionTimeout"),
-            Self::UpdateCommit(lci) => write!(f, "UpdateCommit({lci})")
+            Self::UpdateCommit(lci) => write!(f, "UpdateCommit({lci})"),
+            Self::StaleLeader{new_term} => write!(f, "StaleLeader({new_term})")
         }
     }
 }
 impl std::fmt::Debug for Event {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Event::")?;
-        match self {
-            Self::GetState(_) => write!(f, "GetState"),
-            Self::Kill => write!(f, "Kill"),
-            Self::StartCmd {..} => write!(f, "StartCmd"),
-            Self::AppendEntries {..} => write!(f, "AppendEntries"),
-            Self::RequestVote {..} => write!(f, "RequestVote"),
-            Self::QueryEntry {..} => write!(f, "QueryEntry"),
-            Self::Trans(to) => write!(f, "Trans({to:?})"),
-            Self::HeartBeatTimeout => write!(f, "HeartBeatTimeout"),
-            Self::GrantVote {..} => write!(f, "GrantVote"),
-            Self::OutdateCandidate {..} => write!(f, "OutdateCandidate"),
-            Self::ElectionTimeout => write!(f, "ElectionTimeout"),
-            Self::UpdateCommit(lci) => write!(f, "UpdateCommit({lci})")
-        }
+        write!(f, "{self}")
     }
 }
 

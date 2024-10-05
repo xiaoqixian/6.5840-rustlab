@@ -2,9 +2,7 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use std::sync::{atomic::AtomicBool, Arc};
-
-use crate::{candidate::VoteStatus, event::{EvQueue, Event}, log::{LogEntry, LogInfo}, raft::{RaftCore, RaftHandle}};
+use crate::{candidate::VoteStatus, event::Event, logs::{LogEntry, LogInfo}, raft::RaftHandle};
 use serde::{Serialize, Deserialize};
 
 pub type RequestVoteRes = Result<RequestVoteReply, ()>;
@@ -36,6 +34,8 @@ pub enum EntryStatus {
 pub struct AppendEntriesArgs {
     pub from: usize,
     pub term: usize,
+    // last committed index
+    pub lci: usize,
     pub entry_type: AppendEntriesType
 }
 #[derive(Debug, Serialize, Deserialize)]
@@ -89,42 +89,39 @@ impl RpcService {
     /// The AppendEntries event may not be processed.
     /// For instance, the Raft node may already be dead.
     pub async fn append_entries(&self, args: AppendEntriesArgs) -> AppendEntriesRes {
-        if self.raft.dead() {
-            return Err(());
-        }
         let (tx, rx) = tokio::sync::oneshot::channel();
         let ev = Event::AppendEntries {
             args,
             reply_tx: tx
         };
-        self.raft.ev_q.just_put(ev).await;
+        if let Err(_) = self.raft.ev_q.just_put(ev) {
+            return Err(());
+        }
         Ok(rx.await.unwrap())
     }
 
     /// Request a vote from this raft node.
     pub async fn request_vote(&self, args: RequestVoteArgs) -> RequestVoteRes {
-        if self.raft.dead() {
-            return Err(());
-        }
         let (tx, rx) = tokio::sync::oneshot::channel();
         let ev = Event::RequestVote {
             args,
             reply_tx: tx
         };
-        self.raft.ev_q.just_put(ev).await;
+        if let Err(_) = self.raft.ev_q.just_put(ev) {
+            return Err(());
+        }
         Ok(rx.await.unwrap())
     }
 
     pub async fn query_entry(&self, args: QueryEntryArgs) -> QueryEntryRes {
-        if self.raft.dead() {
-            return Err(());
-        }
         let (tx, rx) = tokio::sync::oneshot::channel();
         let ev = Event::QueryEntry {
             args,
             reply_tx: tx
         };
-        self.raft.ev_q.just_put(ev).await;
+        if let Err(_) = self.raft.ev_q.just_put(ev) {
+            return Err(());
+        }
         Ok(rx.await.unwrap())
     }
 }

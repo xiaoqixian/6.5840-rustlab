@@ -12,6 +12,7 @@ rand = "0.8.5"
 serde = { version = "1.0.208", features = ["default", "derive"] }
 tokio = { version = "1.40.0", features = ["full"] }
 colored = "2.1.0"
+bit-vec = "0.8.0"
 
 [features]
 default = ["info_log_level"]

@@ -13,7 +13,7 @@ use std::{collections::HashMap, fmt::{Debug, Display}, ops::DerefMut, sync::{ato
 use labrpc::network::Network;
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::sync::{Mutex, RwLock};
-use crate::{msg::{ApplyMsg, Command}, persist::Persister, raft::Raft, UbRx};
+use crate::{ApplyMsg, persist::Persister, raft::Raft, UbRx};
 use colored::Colorize;
 
 macro_rules! fatal {
@@ -143,10 +143,13 @@ impl<T> Tester<T>
 
     async fn cleanup(&self) {
         self.finished.store(true, Ordering::Release);
-        for raft in self.config.write().await
-            .nodes.iter().filter_map(|node| node.raft.as_ref()) {
+        let config = self.config.write().await;
+        for raft in config.nodes.iter()
+            .filter_map(|node| node.raft.as_ref()) 
+        {
             raft.kill().await;
         }
+        config.net.close();
     }
 
     async fn start1(&self, id: usize, snapshot: bool) {
@@ -381,7 +384,7 @@ impl<T> Tester<T>
         cmd
     }
 
-    async fn ingest_snapshot(&self, id: usize, snapshot: Vec<u8>, index: Option<usize>) {
+    async fn ingest_snapshot(&self, _id: usize, _snapshot: Vec<u8>, _index: Option<usize>) {
 
     }
 
@@ -412,10 +415,10 @@ impl<T> Applier<T>
     async fn run(mut self, snap: bool) {
         while let Some(msg) = self.apply_ch.recv().await {
             match msg {
-                ApplyMsg::Command(_cmd) => {
-                    
+                ApplyMsg::Command {index, command} => {
+                    self.check_logs(self.id, index, command).await;
                 },
-                ApplyMsg::Snapshot(_snapshot) if snap => {},
+                ApplyMsg::Snapshot {..} if snap => {},
                 _ => fatal!("Snapshot unexpected")
             }
         }
@@ -424,8 +427,8 @@ impl<T> Applier<T>
     /// Check applied commands index and term consistency,
     /// if ok, insert this command into logs.
     /// WARN: check_logs assume the Config.lock is hold by the caller.
-    async fn check_logs(&self, id: usize, cmd: Command) {
-        let cmd_value = bincode::deserialize_from::<_, T>(&cmd.command[..])
+    async fn check_logs(&self, id: usize, cmd_idx: usize, cmd: Vec<u8>) {
+        let cmd_value = bincode::deserialize_from::<_, T>(&cmd[..])
             .unwrap();
 
         let mut logs_guard = self.logs.lock().await;
@@ -436,21 +439,21 @@ impl<T> Applier<T>
         // if greater, logs applied out of order;
         // if less, the log is applied before, which is not allowed 
         // for a state machine.
-        if cmd.index > logs[id].len() {
-            fatal!("Server {id} apply out of order {}", cmd.index);
+        if cmd_idx > logs[id].len() {
+            fatal!("Server {id} apply out of order {}", cmd_idx);
         }
-        else if cmd.index < logs[id].len() {
-            fatal!("Server {id} applied the log {} before", cmd.index);
+        else if cmd_idx < logs[id].len() {
+            fatal!("Server {id} applied the log {} before", cmd_idx);
         }
 
         // check all logs of other nodes, if the index exist in the logs
         // applied by them. 
         // panics if exist two command values are inconsistent.
         for (i, log) in logs.iter().enumerate() {
-            match log.get(cmd.index) {
+            match log.get(cmd_idx) {
                 Some(val) if *val != cmd_value => {
                     fatal!("commit index = {} server={} {} != server={} {}",
-                        cmd.index, 
+                        cmd_idx, 
                         id, cmd_value,
                         i, val
                     );
@@ -461,6 +464,6 @@ impl<T> Applier<T>
 
         logs[id as usize].push(cmd_value);
         logs_guard.max_cmd_indx = usize::max(logs_guard.max_cmd_indx, 
-            cmd.index);
+            cmd_idx);
     }
 }

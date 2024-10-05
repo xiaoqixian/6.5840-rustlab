@@ -7,7 +7,7 @@ use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
 use labrpc::{client::ClientEnd, err::{DISCONNECTED, TIMEOUT}};
 use serde::{Deserialize, Serialize};
 
-use crate::{common, event::{Event, TO_LEADER}, follower::Follower, log::Logs, raft::RaftCore, role::{RoleEvQueue, Trans}, service::{AppendEntriesArgs, AppendEntriesReply, EntryStatus, QueryEntryArgs, QueryEntryReply, RequestVoteArgs, RequestVoteReply, RequestVoteRes}, OneTx};
+use crate::{common, event::{Event, TO_FOLLOWER, TO_LEADER}, logs::Logs, raft::RaftCore, role::{RoleCore, RoleEvQueue, Trans}, service::{AppendEntriesArgs, AppendEntriesReply, EntryStatus, QueryEntryArgs, QueryEntryReply, RequestVoteArgs, RequestVoteReply, RequestVoteRes}, OneTx};
 use crate::info;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -35,9 +35,9 @@ struct Poll {
 }
 
 pub struct Candidate {
-    pub core: RaftCore,
-    pub logs: Logs,
-    pub ev_q: RoleEvQueue,
+    core: RaftCore,
+    logs: Logs,
+    ev_q: RoleEvQueue,
     active: Arc<AtomicBool>,
     voters: Vec<bool>,
     votes: usize,
@@ -45,54 +45,6 @@ pub struct Candidate {
 }
 
 impl Candidate {
-    pub async fn from_follower(flw: Follower) -> Self {
-        let Follower {
-            mut core, logs, ev_q, ..
-        } = flw;
-        let ev_q = ev_q.transfer();
-        let n = core.rpc_client.n();
-        core.term += 1;
-
-        {
-            let poll = Poll {
-                me: core.me,
-                term: core.term,
-                ev_q: ev_q.clone()
-            };
-            let poll = Arc::new(poll);
-
-            let args = Arc::new(RequestVoteArgs {
-                from: core.me,
-                term: core.term,
-                last_log: logs.last_log_info().await
-            });
-            
-            for peer in core.rpc_client.peers() {
-                tokio::spawn(poll.clone().poll(peer, args.clone()));
-            }
-
-            let ev_q = ev_q.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(
-                    common::gen_rand_duration(common::ELECTION_TIMEOUT)
-                ).await;
-                if let Ok(_) = ev_q.put(Event::ElectionTimeout).await {
-                    info!("Candidate {} election timeout", core.me);
-                }
-            });
-        }
-
-        Self {
-            core,
-            logs,
-            active: Arc::new(AtomicBool::new(true)),
-            ev_q,
-            voters: vec![false; n],
-            votes: 0,
-            n
-        }
-    }
-
     pub async fn process(&mut self, ev: Event) -> Option<Trans> {
         match ev {
             Event::Trans(Trans::ToCandidate) => 
@@ -128,15 +80,13 @@ impl Candidate {
             },
 
             Event::OutdateCandidate {new_term} => {
-                let _ = self.ev_q.put(Event::Trans(
-                        Trans::ToFollower {new_term: Some(new_term)})).await;
+                self.core.term = new_term;
+                let _ = self.ev_q.put(TO_FOLLOWER);
             },
             
             Event::ElectionTimeout => {
                 info!("{self} election timeout");
-                let _ = self.ev_q.put(Event::Trans(Trans::ToFollower {
-                    new_term: None
-                })).await;
+                let _ = self.ev_q.put(TO_FOLLOWER);
             }
 
             ev => panic!("Unexpected event for a candidate: {ev}")
@@ -144,8 +94,9 @@ impl Candidate {
         None
     }
 
-    pub async fn stop(&self) {
-        self.active.store(false, Ordering::Release);
+    pub fn stop(self) -> RoleCore {
+        self.active.store(false, Ordering::Relaxed);
+        self.into()
     }
 
     /// When a candidate receives a AppendEntries request, it first checks
@@ -158,9 +109,8 @@ impl Candidate {
         let myterm = self.core.term;
         
         let entry_status = if args.term >= myterm {
-            let _ = self.ev_q.put(Event::Trans(Trans::ToFollower {
-                new_term: (args.term > myterm).then(|| args.term)
-            })).await;
+            self.core.term = args.term;
+            let _ = self.ev_q.put(TO_FOLLOWER);
             EntryStatus::Retry
         } else {
             EntryStatus::Stale {
@@ -203,17 +153,16 @@ impl Candidate {
                 }
             },
             cmp::Ordering::Less => {
-                let _ = self.ev_q.put(Event::Trans(Trans::ToFollower {
-                    new_term: Some(args.term)
-                })).await;
-                let up_to_date = self.logs.up_to_date(&args.last_log).await;
+                self.core.term = args.term;
+                let _ = self.ev_q.put(TO_FOLLOWER);
+                let up_to_date = self.logs.up_to_date(&args.last_log);
 
                 if up_to_date {
                     self.core.vote_for = Some(args.from);
                     VoteStatus::Granted
                 } else {
                     {
-                        let my_last = self.logs.last_log_info().await;
+                        let my_last = self.logs.last_log_info();
                         info!("Reject {} for stale logs, my last = {}, its last = {}", args.from, my_last, args.last_log);
                         
                     }
@@ -232,7 +181,7 @@ impl Candidate {
     }
 
     pub async fn query_entry(&self, args: QueryEntryArgs, reply_tx: OneTx<QueryEntryReply>) {
-        let reply = if self.logs.log_exist(&args.log_info).await {
+        let reply = if self.logs.log_exist(&args.log_info) {
             QueryEntryReply::Exist
         } else { QueryEntryReply::NotExist };
         reply_tx.send(reply).unwrap();
@@ -246,7 +195,7 @@ impl Candidate {
             self.voters[voter] = true;
             self.votes += 1;
             if self.votes >= self.n / 2 {
-                let _ = self.ev_q.put(TO_LEADER).await;
+                let _ = self.ev_q.put(TO_LEADER);
             }
         }
     }
@@ -292,14 +241,14 @@ impl Poll {
             VoteStatus::Granted => {
                 let _ = self.ev_q.put(Event::GrantVote {
                     voter: reply.voter,
-                }).await;
+                });
             },
             VoteStatus::Denied { term } => {
                 let myterm = self.term;
                 if myterm <= term {
                     let _ = self.ev_q.put(Event::OutdateCandidate {
                         new_term: term
-                    }).await;
+                    });
                 }
             },
             VoteStatus::Rejected { term } => {
@@ -307,9 +256,66 @@ impl Poll {
                 if myterm < term {
                     let _ = self.ev_q.put(Event::OutdateCandidate {
                         new_term: term
-                    }).await;
+                    });
                 }
             }
+        }
+    }
+}
+
+impl From<RoleCore> for Candidate {
+    fn from(role_core: RoleCore) -> Self {
+        let RoleCore { raft_core: mut core, logs, ev_q } = role_core;
+        let n = core.rpc_client.n();
+        core.term += 1;
+
+        {
+            let poll = Poll {
+                me: core.me,
+                term: core.term,
+                ev_q: ev_q.clone()
+            };
+            let poll = Arc::new(poll);
+
+            let args = Arc::new(RequestVoteArgs {
+                from: core.me,
+                term: core.term,
+                last_log: logs.last_log_info()
+            });
+            
+            for peer in core.rpc_client.peers() {
+                tokio::spawn(poll.clone().poll(peer, args.clone()));
+            }
+
+            let ev_q = ev_q.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(
+                    common::gen_rand_duration(common::ELECTION_TIMEOUT)
+                ).await;
+                if let Ok(_) = ev_q.put(Event::ElectionTimeout) {
+                    info!("Candidate {} election timeout", core.me);
+                }
+            });
+        }
+
+        Self {
+            core,
+            logs,
+            active: Arc::new(AtomicBool::new(true)),
+            ev_q,
+            voters: vec![false; n],
+            votes: 0,
+            n
+        }
+    }
+}
+
+impl Into<RoleCore> for Candidate {
+    fn into(self) -> RoleCore {
+        RoleCore {
+            raft_core: self.core,
+            logs: self.logs,
+            ev_q: self.ev_q.transfer()
         }
     }
 }

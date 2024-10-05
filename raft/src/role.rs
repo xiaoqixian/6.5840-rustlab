@@ -8,6 +8,8 @@ use crate::event::{EvQueue, Event};
 use crate::follower::Follower;
 use crate::candidate::Candidate;
 use crate::leader::Leader;
+use crate::logs::Logs;
+use crate::raft::RaftCore;
 
 pub enum Role {
     // Nil provides a default value for Role, 
@@ -19,13 +21,17 @@ pub enum Role {
     Leader(Leader)
 }
 
+pub struct RoleCore {
+    pub raft_core: RaftCore,
+    pub logs: Logs,
+    pub ev_q: RoleEvQueue
+}
+
 #[derive(Debug)]
 pub enum Trans {
     ToCandidate,
     ToLeader,
-    ToFollower {
-        new_term: Option<usize>
-    }
+    ToFollower
 }
 
 #[derive(Clone)]
@@ -39,8 +45,8 @@ impl RoleEvQueue {
         Self { ev_q, key }
     }
 
-    pub async fn put(&self, ev: Event) -> Result<(), Event> {
-        self.ev_q.put(ev, self.key).await
+    pub fn put(&self, ev: Event) -> Result<(), Event> {
+        self.ev_q.put(ev, self.key)
     }
 
     pub fn transfer(self) -> Self {
@@ -51,17 +57,6 @@ impl RoleEvQueue {
         }
     }
 }
-
-// macro_rules! is_role {
-//     ($name: ident, $role: ident) => {
-//         pub fn $name(&self) -> bool {
-//             match self {
-//                 Self::$role(_) => true,
-//                 _ => false
-//             }
-//         }
-//     }
-// }
 
 impl Default for Role {
     fn default() -> Self {
@@ -80,51 +75,30 @@ impl Role {
 
         // The role may need to go through some role transformation.
         if let Some(trans) = trans {
-            let mut role = std::mem::take(self);
-            role.stop().await;
+            let role = std::mem::take(self);
 
             // only the follower can change the term by itself, 
             // candidate and leader cannot change the term, the 
             // only time they need to change the term is when 
             // they need to become a follower.
             *self = match (role, trans) {
-                (Self::Follower(mut flw), Trans::ToCandidate) => {
-                    flw.core.term += 1;
-                    Self::Candidate(Candidate::from_follower(flw).await)
+                (Self::Follower(flw), Trans::ToCandidate) => {
+                    Self::Candidate(Candidate::from(flw.stop()))
                 },
                 (Self::Candidate(cd), Trans::ToLeader) => {
-                    Self::Leader(Leader::from_candidate(cd).await)
+                    Self::Leader(Leader::from(cd.stop()))
                 },
-                (Self::Candidate(mut cd), Trans::ToFollower {new_term}) => {
-                    if let Some(new_term) = new_term {
-                        cd.core.term = new_term;
-                    }
-                    Self::Follower(Follower::from_candidate(cd).await)
+                (Self::Candidate(cd), Trans::ToFollower) => {
+                    Self::Follower(Follower::from(cd.stop()))
                 },
-                (Self::Leader(mut ld), Trans::ToFollower {new_term}) => {
-                    if let Some(new_term) = new_term {
-                        ld.core.term = new_term;
-                    }
-                    Self::Follower(Follower::from_leader(ld).await)
+                (Self::Leader(ld), Trans::ToFollower) => {
+                    Self::Follower(Follower::from(ld.stop()))
                 },
                 (r, t) => panic!("Unexpected combination of 
                     transformation {t:?} and role {r}.")
             }
         }
     }
-
-    pub async fn stop(&mut self) {
-        match self {
-            Self::Follower(flw) => flw.stop().await,
-            Self::Candidate(cd) => cd.stop().await,
-            Self::Leader(ld) => ld.stop().await,
-            Self::Nil => panic!("Role is Nil")
-        }
-    }
-
-    // is_role!(is_follower, Follower);
-    // is_role!(is_candidate, Candidate);
-    // is_role!(is_leader, Leader);
 }
 
 impl std::fmt::Display for Role {

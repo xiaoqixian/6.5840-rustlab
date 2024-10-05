@@ -2,36 +2,31 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use std::{sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, Arc}, time::Duration};
+use std::sync::Arc;
 
 use labrpc::client::Client;
 
 use crate::{
-    event::{EvQueue, Event}, follower::Follower, info, log::Logs, msg::ApplyMsg, persist::Persister, role::Role, service::RpcService, UbRx, UbTx
+    event::{EvQueue, Event}, follower::Follower, info, logs::Logs, persist::Persister, role::{Role, RoleCore, RoleEvQueue}, service::RpcService, ApplyMsg, UbRx, UbTx
 };
 
 pub(crate) struct RaftCore {
     pub me: usize,
-    pub dead: Arc<AtomicBool>,
     pub rpc_client: Client,
-    pub persister: Persister,
-    pub apply_ch: UbTx<ApplyMsg>,
+    pub _persister: Persister,
     pub term: usize,
     // ev_q is shared
-    pub ev_q: Arc<EvQueue>,
     pub vote_for: Option<usize>
 }
 
 #[derive(Clone)]
 pub(crate) struct RaftHandle {
     pub ev_q: Arc<EvQueue>,
-    dead: Arc<AtomicBool>
 }
 
 // The Raft object to implement a single raft node.
 pub struct Raft {
     ev_q: Arc<EvQueue>,
-    dead: Arc<AtomicBool>
 }
 
 /// Raft implementation.
@@ -62,37 +57,35 @@ impl Raft {
 
         let (ev_ch_tx, ev_ch_rx) = tokio::sync::mpsc::unbounded_channel();
         let ev_q = Arc::new(EvQueue::new(ev_ch_tx, me));
-        let dead = Arc::<AtomicBool>::default();
 
         let core = RaftCore {
             me,
-            dead: dead.clone(),
             rpc_client,
-            persister,
-            apply_ch,
+            _persister: persister,
             term: 0,
-            ev_q: ev_q.clone(),
             vote_for: None
         };
 
         let handle = RaftHandle {
             ev_q: ev_q.clone(),
-            dead: dead.clone()
         };
 
-        let logs = Logs::new();
+        let logs = Logs::new(apply_ch);
 
         core.rpc_client.add_service("RpcService".to_string(), 
             Box::new(RpcService::new(handle))).await;
 
-        let flw = Follower::new(core, logs).await;
+        let flw = Follower::from(RoleCore {
+            raft_core: core,
+            logs,
+            ev_q: RoleEvQueue::new(ev_q.clone(), 0)
+        });
         tokio::spawn(Self::process_ev(Role::Follower(flw), ev_ch_rx));
 
         info!("Raft instance {me} started.");
 
         Self {
             ev_q,
-            dead
         }
     }
 
@@ -101,7 +94,7 @@ impl Raft {
     pub async fn get_state(&self) -> (usize, bool) {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let ev = Event::GetState(tx);
-        self.ev_q.just_put(ev).await;
+        self.ev_q.just_put(ev).unwrap();
         rx.await.unwrap()
     }
 
@@ -145,26 +138,26 @@ impl Raft {
             cmd: command,
             reply_tx: tx
         };
-        self.ev_q.just_put(ev).await;
+        self.ev_q.just_put(ev).unwrap();
         rx.await.unwrap()
     }
 
     /// Kill the server.
     pub async fn kill(&self) {
-        self.dead.store(true, Ordering::Release);
+        self.ev_q.just_put(Event::Kill)
+            .expect("Kill ev should not be rejected");
     }
 
     async fn process_ev(mut role: Role, mut ev_ch_rx: UbRx<Event>) {
         while let Some(ev) = ev_ch_rx.recv().await {
-            role.process(ev).await;
+            match ev {
+                Event::Kill => {
+                    ev_ch_rx.close();
+                    break;
+                },
+                ev => role.process(ev).await
+            }
         }
-    }
-}
-
-impl RaftHandle {
-    #[inline]
-    pub fn dead(&self) -> bool {
-        self.dead.load(Ordering::Acquire)
     }
 }
 

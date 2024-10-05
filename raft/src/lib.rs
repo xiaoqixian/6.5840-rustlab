@@ -4,7 +4,6 @@
 
 
 pub mod raft;
-mod msg;
 mod persist;
 mod follower;
 mod candidate;
@@ -13,13 +12,25 @@ mod common;
 mod event;
 mod service;
 mod role;
-mod log;
+mod logs;
 mod utils;
 
 type UbTx<T> = tokio::sync::mpsc::UnboundedSender<T>;
 type UbRx<T> = tokio::sync::mpsc::UnboundedReceiver<T>;
 type OneTx<T> = tokio::sync::oneshot::Sender<T>;
-type OneRx<T> = tokio::sync::oneshot::Receiver<T>;
+// type OneRx<T> = tokio::sync::oneshot::Receiver<T>;
+
+pub enum ApplyMsg {
+    Command {
+        index: usize,
+        command: Vec<u8>
+    },
+    Snapshot {
+        term: usize,
+        index: usize,
+        snapshot: Vec<u8>
+    }
+}
 
 #[cfg(test)]
 pub mod tests;

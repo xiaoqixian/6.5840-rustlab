@@ -1,8 +1,8 @@
-// Date:   Thu Sep 19 17:24:00 2024
+// Date:   Tue Oct 01 14:56:23 2024
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use std::sync::{atomic::AtomicBool, Arc};
+use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
 
 use labrpc::{client::ClientEnd, err::{DISCONNECTED, TIMEOUT}};
 use serde::{de::DeserializeOwned, Serialize};
@@ -14,6 +14,7 @@ pub struct Peer {
     end: ClientEnd,
     active: Arc<AtomicBool>
 }
+
 
 impl Peer {
     pub fn new(end: ClientEnd, active: Arc<AtomicBool>) -> Self {
@@ -31,7 +32,7 @@ impl Peer {
               E: DeserializeOwned + Send + Sync
     {
         for _ in 0..tries {
-            if !self.active() { break; }
+            if !self.active.load(Ordering::Relaxed) { break; }
 
             let reply = self.end.call::<A, Result<R, E>>(method, arg).await;
             match reply {
@@ -54,7 +55,7 @@ impl Peer {
               R: DeserializeOwned + Send + Sync,
               E: DeserializeOwned + Send + Sync
     {
-        while self.active() {
+        while self.active.load(Ordering::Relaxed) {
             let reply = self.end.call::<A, Result<R, E>>(method, arg).await;
             match reply {
                 Ok(Ok(v)) => return Some(v),
@@ -68,10 +69,5 @@ impl Peer {
             }
         }
         None
-    }
-
-    fn active(&self) -> bool {
-        use std::sync::atomic::Ordering;
-        self.active.load(Ordering::Acquire)
     }
 }
