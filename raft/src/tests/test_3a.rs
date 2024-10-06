@@ -12,16 +12,19 @@ use colored::Colorize;
 macro_rules! warn {
     ($($args: expr),*) => {{
         let msg = format_args!($($args),*);
-        let msg = format!("WARNING: {msg}").truecolor(255,175,0);
+        let msg = format!("[TEST WARNING] {msg}").truecolor(255,175,0);
         println!("{msg}");
     }}
 }
 macro_rules! debug {
-    ($($args: expr),*) => {{
-        let msg = format!($($args),*);
-        let msg = format!("DEBUG: {msg}").truecolor(240, 191, 79);
-        println!("{msg}");
-    }}
+    ($($args: expr),*) => {
+        #[cfg(not(feature = "no_test_debug"))]
+        {
+            let msg = format!("[TEST] {}", format_args!($($args),*))
+                .truecolor(240, 191, 79);
+            println!("{msg}");
+        }
+    }
 }
 
 #[tokio::test]
@@ -83,7 +86,7 @@ async fn test3a_reelection() {
 }
 
 #[tokio::test]
-async fn test3a_many_election() {
+async fn test3a_many_elections() {
     const N: usize = 7;
     const RELIABLE: bool = false;
     const SNAPSHOT: bool = false;

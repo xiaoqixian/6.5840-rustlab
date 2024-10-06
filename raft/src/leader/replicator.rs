@@ -2,7 +2,7 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use crate::{common::{self, RPC_FAIL_RETRY}, event::Event, info, leader::ldlogs::ReplQueryRes, logs::LogInfo, role::{RoleEvQueue, Trans}, service::{AppendEntriesArgs, AppendEntriesReply, AppendEntriesType, EntryStatus, QueryEntryArgs, QueryEntryReply}, utils::Peer};
+use crate::{common::{self, RPC_FAIL_RETRY}, event::Event, info, leader::ldlogs::ReplQueryRes, logs::LogInfo, role::RoleEvQueue, service::{AppendEntriesArgs, AppendEntriesReply, AppendEntriesType, EntryStatus, QueryEntryArgs, QueryEntryReply}, utils::Peer};
 
 use super::{counter::ReplCounter, ldlogs::ReplLogs};
 
@@ -83,11 +83,11 @@ impl Replicator {
 
             break 'search target;
         };
-        Ok(target + 1)
+        Ok(target)
     }
 
     pub async fn start(mut self) -> Result<(), ()> {
-        self.next_index = self.match_index().await?;
+        self.next_index = self.match_index().await? + 1;
         info!("{self}: find index {}", self.next_index);
 
         let mut hb_ticker = tokio::time::interval(common::HEARTBEAT_INTERVAL);
@@ -101,7 +101,7 @@ impl Replicator {
             let next_next_index = match &entry_type {
                 AppendEntriesType::HeartBeat => self.next_index,
                 AppendEntriesType::Entries {entries,..} => 
-                    entries.last().unwrap().index
+                    entries.last().unwrap().index + 1
             };
 
             let args = AppendEntriesArgs {
@@ -133,12 +133,15 @@ impl Replicator {
                 },
                 EntryStatus::Confirmed => {
                     if self.next_index < next_next_index {
-                        self.repl_counter.confirm(self.peer_id, 
-                            self.next_index..next_next_index);
+                        self.repl_counter.confirm(self.peer_id, next_next_index-1);
+                        info!("{self}: update next_index {} -> {next_next_index}", self.next_index);
                         self.next_index = next_next_index;
                     }
                 },
-                EntryStatus::Retry => {}
+                EntryStatus::Mismatched => {
+                    self.next_index = self.match_index().await? + 1;
+                },
+                EntryStatus::Hold => {}
             }
         }
         Ok(())

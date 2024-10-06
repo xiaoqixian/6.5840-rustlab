@@ -111,7 +111,7 @@ impl Candidate {
         let entry_status = if args.term >= myterm {
             self.core.term = args.term;
             let _ = self.ev_q.put(TO_FOLLOWER);
-            EntryStatus::Retry
+            EntryStatus::Hold
         } else {
             EntryStatus::Stale {
                 term: myterm

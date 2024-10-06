@@ -4,14 +4,20 @@
 
 use std::{ops::RangeInclusive, sync::{Arc, RwLock}};
 
-use crate::{fatal, logs::{LogInfo, Logs}, service::AppendEntriesType};
+use crate::{info, logs::{LogInfo, Logs}, service::AppendEntriesType};
 
 /// LdLogs is a thread-safe wrapper of Logs
 pub struct LdLogs {
+    #[cfg(not(feature = "no_debug"))]
+    me: usize,
     logs: Arc<RwLock<Option<Logs>>>
 }
 
 pub struct ReplLogs {
+    #[cfg(not(feature = "no_debug"))]
+    me: usize,
+    #[cfg(not(feature = "no_debug"))]
+    to: usize,
     logs: Arc<RwLock<Option<Logs>>>
 }
 
@@ -38,9 +44,9 @@ macro_rules! ld_logs_method {
 
 impl LdLogs {
     ld_logs_method!(write, push_cmd(term: usize, cmd: Vec<u8>) -> (usize, usize));
-    ld_logs_method!(write, push_noop(term: usize) -> usize);
-    ld_logs_method!(read,  lci() -> usize);
-    ld_logs_method!(read,  last_log_info() -> LogInfo);
+    // ld_logs_method!(write, push_noop(term: usize) -> usize);
+    // ld_logs_method!(read,  lci() -> usize);
+    // ld_logs_method!(read,  last_log_info() -> LogInfo);
     ld_logs_method!(write, update_commit(lci: usize));
     ld_logs_method!(read,  up_to_date(log: &LogInfo) -> bool);
     ld_logs_method!(read, log_exist(log: &LogInfo) -> bool);
@@ -66,6 +72,7 @@ impl ReplLogs {
     }
 
     pub fn repl_get(&self, next_index: usize) -> Result<ReplQueryRes, ()> {
+        info!("{self}: repl_get, next_index = {next_index}");
         debug_assert!(next_index >= 1);
         let logs_guard = self.logs.read().unwrap();
         let logs = match logs_guard.as_ref() {
@@ -100,6 +107,28 @@ impl Into<Logs> for LdLogs {
     }
 }
 
+#[cfg(not(feature = "no_debug"))]
+impl From<(usize, Logs)> for LdLogs {
+    fn from((me, logs): (usize, Logs)) -> Self {
+        Self {
+            me,
+            logs: Arc::new(RwLock::new(Some(logs)))
+        }
+    }
+}
+
+#[cfg(not(feature = "no_debug"))]
+impl From<(usize, &LdLogs)> for ReplLogs {
+    fn from((to, ld_logs): (usize, &LdLogs)) -> Self {
+        Self {
+            me: ld_logs.me,
+            to,
+            logs: ld_logs.logs.clone()
+        }
+    }
+}
+
+#[cfg(feature = "no_debug")]
 impl From<Logs> for LdLogs {
     fn from(logs: Logs) -> Self {
         Self {
@@ -108,10 +137,25 @@ impl From<Logs> for LdLogs {
     }
 }
 
+#[cfg(feature = "no_debug")]
 impl From<&LdLogs> for ReplLogs {
     fn from(ld_logs: &LdLogs) -> Self {
         Self {
             logs: ld_logs.logs.clone()
         }
+    }
+}
+
+#[cfg(not(feature = "no_debug"))]
+impl std::fmt::Display for LdLogs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[LdLogs {}]", self.me)
+    }
+}
+
+#[cfg(not(feature = "no_debug"))]
+impl std::fmt::Display for ReplLogs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[ReplLogs {}->{}]", self.me, self.to)
     }
 }

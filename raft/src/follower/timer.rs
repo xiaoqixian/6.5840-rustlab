@@ -4,9 +4,11 @@
 
 use std::time::Duration;
 
+use crate::UbTx;
+
 /// A restettable timer
 pub struct Timer {
-    tx: tokio::sync::mpsc::UnboundedSender<()>
+    tx: UbTx<()>
 }
 
 impl Timer {
@@ -35,8 +37,8 @@ impl Timer {
         Self { tx }
     }
 
-    pub fn reset(&self) {
-        self.tx.send(()).unwrap();
+    pub fn reset(&self) -> bool {
+        self.tx.send(()).is_ok()
     }
 }
 

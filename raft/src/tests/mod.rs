@@ -30,6 +30,17 @@ macro_rules! greet {
     }}
 }
 
+macro_rules! debug {
+    ($($args: expr),*) => {
+        #[cfg(not(feature = "no_test_debug"))]
+        {
+            let msg = format!("[TEST] {}", format_args!($($args),*))
+                .truecolor(240, 191, 79);
+            println!("{msg}");
+        }
+    }
+}
+
 const ELECTION_TIMEOUT: Duration = Duration::from_secs(1);
 
 struct Node {
@@ -51,7 +62,7 @@ struct Config<T> {
 
 struct Logs<T> {
     logs: Vec<Vec<T>>,
-    max_cmd_indx: usize
+    max_cmd_idx: usize
 }
 
 struct Applier<T> {
@@ -83,7 +94,7 @@ impl<T> Tester<T>
             net: Network::new(n).reliable(reliable).long_delay(true),
             logs: Arc::new(Mutex::new(Logs {
                 logs: vec![Vec::new(); n],
-                max_cmd_indx: 0
+                max_cmd_idx: 0
             })),
             nodes: std::iter::repeat_with(
                 || Node {
@@ -128,26 +139,21 @@ impl<T> Tester<T>
 
     async fn end(&self) {
         self.finished.store(true, Ordering::Release);
-        let config = self.config.read().await;
+        let mut config = self.config.write().await;
         
         let t = config.start.elapsed();
         let nrpc = config.net.rpc_cnt();
         let nbytes = config.net.byte_cnt();
-        let ncmd = config.logs.lock().await.max_cmd_indx;
+        let ncmd = config.logs.lock().await.max_cmd_idx;
         
         greet!(" ... Passed --");
         greet!(" {}ms, {} peers, {} rpc, {} bytes, {} cmds", 
             t.as_millis(), config.n, nrpc, nbytes, ncmd);
-        self.cleanup().await;
-    }
 
-    async fn cleanup(&self) {
-        self.finished.store(true, Ordering::Release);
-        let config = self.config.write().await;
-        for raft in config.nodes.iter()
-            .filter_map(|node| node.raft.as_ref()) 
-        {
-            raft.kill().await;
+        for node in config.nodes.iter_mut() {
+            if let Some(raft) = node.raft.take() {
+                raft.kill().await;
+            }
         }
         config.net.close();
     }
@@ -428,6 +434,7 @@ impl<T> Applier<T>
     /// if ok, insert this command into logs.
     /// WARN: check_logs assume the Config.lock is hold by the caller.
     async fn check_logs(&self, id: usize, cmd_idx: usize, cmd: Vec<u8>) {
+        debug!("{id} applied command {cmd_idx}");
         let cmd_value = bincode::deserialize_from::<_, T>(&cmd[..])
             .unwrap();
 
@@ -463,7 +470,6 @@ impl<T> Applier<T>
         }
 
         logs[id as usize].push(cmd_value);
-        logs_guard.max_cmd_indx = usize::max(logs_guard.max_cmd_indx, 
-            cmd_idx);
+        logs_guard.max_cmd_idx = usize::max(logs_guard.max_cmd_idx, cmd_idx);
     }
 }

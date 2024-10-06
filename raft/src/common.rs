@@ -50,9 +50,12 @@ macro_rules! info {
 #[macro_export]
 macro_rules! warn {
     ($($args: expr),*) => {
-        #[cfg(feature = "warn_log_level")]
+        #[cfg(debug_assertions)]
         {
-            crate::log!((255,175,0), $($args),*)
+            use colored::Colorize;
+            let msg = format!($($args),*).truecolor(255,175,0);
+            eprintln!("{msg}");
+            // crate::log!((255,175,0), $($args),*)
         }
     }
 }
@@ -63,6 +66,19 @@ macro_rules! error {
         #[cfg(feature = "error_log_level")]
         {
             crate::log!((255,0,0), $($args),*)
+        }
+    }
+}
+
+#[macro_export]
+macro_rules! debug {
+    ($($args: expr),*) => {
+        #[cfg(not(feature = "no_debug"))]
+        {
+            use colored::Colorize;
+            let msg = format!("[DEBUG] {}", format_args!($($args), *))
+                .truecolor(245, 226, 180);
+            println!("{msg}");
         }
     }
 }

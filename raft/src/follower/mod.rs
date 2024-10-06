@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use crate::{
-    candidate::VoteStatus, common, event::{Event, TO_CANDIDATE}, info, logs::Logs, raft::RaftCore, role::{RoleCore, RoleEvQueue, Trans}, service::{AppendEntriesArgs, AppendEntriesReply, EntryStatus, QueryEntryArgs, QueryEntryReply, RequestVoteArgs, RequestVoteReply}, OneTx
+    candidate::VoteStatus, common, event::{Event, TO_CANDIDATE}, info, logs::Logs, raft::RaftCore, role::{RoleCore, RoleEvQueue, Trans}, service::{AppendEntriesArgs, AppendEntriesReply, AppendEntriesType, EntryStatus, QueryEntryArgs, QueryEntryReply, RequestVoteArgs, RequestVoteReply}, OneTx
 };
 
 mod timer;
@@ -73,9 +73,19 @@ impl Follower {
             if myterm < args.term {
                 self.core.term = args.term;
             }
-            // TODO: actually append entries
             self.hb_timer.reset();
-            EntryStatus::Confirmed
+            let entry_status = match args.entry_type {
+                AppendEntriesType::HeartBeat => EntryStatus::Confirmed,
+                AppendEntriesType::Entries {prev, entries} => {
+                    if let Err(entries) = self.logs.try_merge(&prev, entries) {
+                        panic!("{:?} should not be rejected", 
+                            AppendEntriesType::Entries {prev, entries});
+                    }
+                    EntryStatus::Confirmed
+                }
+            };
+            self.logs.update_commit(args.lci);
+            entry_status
         };
         let reply = AppendEntriesReply {
             from: self.core.me,

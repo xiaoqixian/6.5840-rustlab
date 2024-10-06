@@ -23,8 +23,12 @@ pub enum AppendEntriesType {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum EntryStatus {
-    Retry,
+    // tell replicator to hold for a while,
+    // then resend the entries.
+    Hold,
     Confirmed,
+    // the prev log cannot match any log
+    Mismatched,
     Stale {
         term: usize
     }
@@ -131,6 +135,20 @@ impl std::fmt::Display for AppendEntriesType {
         match self {
             Self::HeartBeat => write!(f, "HeartBeat"),
             Self::Entries {..} => write!(f, "AppendEntries")
+        }
+    }
+}
+impl std::fmt::Debug for AppendEntriesType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::HeartBeat => write!(f, "HeartBeat"),
+            Self::Entries {prev, entries} => {
+                write!(f, 
+                    "AppendEntries {{prev: {prev}, entries: [{}, {}]}}", 
+                    entries.first().unwrap().index,
+                    entries.last().unwrap().index
+                )
+            }
         }
     }
 }

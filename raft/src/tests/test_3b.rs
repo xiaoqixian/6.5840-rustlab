@@ -10,6 +10,17 @@ use super::{Config, Tester, WantedCmd, ELECTION_TIMEOUT};
 
 const TIME_LIMIT: Duration = Duration::from_secs(120);
 
+macro_rules! debug {
+    ($($args: expr),*) => {
+        #[cfg(not(feature = "no_debug"))]
+        {
+            let msg = format!($($args),*);
+            let msg = format!("DEBUG: {msg}").truecolor(240, 191, 79);
+            println!("{msg}");
+        }
+    }
+}
+
 macro_rules! fatal {
     ($($args: expr),*) => {{
         let msg = format!($($args),*).red();

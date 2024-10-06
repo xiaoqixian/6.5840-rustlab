@@ -64,14 +64,28 @@ impl Default for Role {
     }
 }
 
+macro_rules! forward {
+    ($role: expr, $name: ident ( $($args: expr),* )) => {
+        match $role {
+            Role::Follower(flw) => flw.$name($($args),*),
+            Role::Candidate(cd) => cd.$name($($args),*),
+            Role::Leader(ld) => ld.$name($($args),*),
+            Role::Nil => panic!("Role is Nil")
+        }
+    };
+    ($role: expr, $name: ident ( $($args: expr),* ).await) => {
+        match $role {
+            Role::Follower(flw) => flw.$name($($args),*).await,
+            Role::Candidate(cd) => cd.$name($($args),*).await,
+            Role::Leader(ld) => ld.$name($($args),*).await,
+            Role::Nil => panic!("Role is Nil")
+        }
+    }
+}
+
 impl Role {
     pub async fn process(&mut self, ev: Event) {
-        let trans = match self {
-            Self::Follower(flw) => flw.process(ev).await,
-            Self::Candidate(cd) => cd.process(ev).await,
-            Self::Leader(ld) => ld.process(ev).await,
-            Self::Nil => panic!("Role is Nil")
-        };
+        let trans = forward!(self, process(ev).await);
 
         // The role may need to go through some role transformation.
         if let Some(trans) = trans {
@@ -98,6 +112,10 @@ impl Role {
                     transformation {t:?} and role {r}.")
             }
         }
+    }
+
+    pub fn stop(self) {
+        forward!(self, stop());
     }
 }
 

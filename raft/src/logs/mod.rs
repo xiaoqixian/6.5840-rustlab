@@ -37,18 +37,8 @@ pub struct LogEntry {
     pub log_type: LogType
 }
 
-// macro_rules! atomic_get_set {
-//     ($name: ident, $setter: ident) => {
-//         pub fn $name(&self) -> usize {
-//             self.$name.load(Ordering::Relaxed)
-//         }
-//         pub fn $setter(&self, val: usize) {
-//             self.$name.store(val, Ordering::Relaxed);
-//         }
-//     }
-// }
-
 pub struct Logs {
+    me: usize,
     logs: Vec<LogEntry>,
     offset: usize,
     cmd_cnt: usize,
@@ -57,7 +47,7 @@ pub struct Logs {
 }
 
 impl Logs {
-    pub fn new(apply_tx: UbTx<ApplyMsg>) -> Self {
+    pub fn new(me: usize, apply_tx: UbTx<ApplyMsg>) -> Self {
         let mut logs = Vec::new();
         logs.push(LogEntry {
             index: 0,
@@ -69,6 +59,7 @@ impl Logs {
         tokio::spawn(Applier::new(apply_tx).start(rx));
 
         Self {
+            me,
             logs,
             offset: 0,
             cmd_cnt: 0,
@@ -77,11 +68,7 @@ impl Logs {
         }
     }
 
-    pub fn last(&self) -> Option<&LogEntry> {
-        self.logs.last()
-    }
-
-    pub fn lii(&self) -> usize {
+    pub fn _lii(&self) -> usize {
         self.offset + 1
     }
 
@@ -104,18 +91,13 @@ impl Logs {
         self.last_log_info() <= *log
     }
 
-    #[warn(unused)]
-    pub fn cmd_cnt(&self) -> usize {
+    pub fn _cmd_cnt(&self) -> usize {
         self.cmd_cnt
     }
 
     pub fn index_term(&self, index: usize) -> Option<usize> {
-        if index < self.offset {
-            None
-        } else {
-            self.logs.get(index - self.offset)
-                .map(|entry| entry.term)
-        }
+        self.get(index)
+            .map(|entry| entry.term)
     }
 
     pub fn log_exist(&self, log_info: &LogInfo) -> bool {
@@ -129,7 +111,11 @@ impl Logs {
     }
 
     pub fn get(&self, index: usize) -> Option<&LogEntry> {
-        self.logs.get(index - self.offset)
+        if index < self.offset {
+            None
+        } else {
+            self.logs.get(index - self.offset)
+        }
     }
 
     pub fn get_range<R>(&self, range: &R) -> Option<&[LogEntry]>
@@ -149,14 +135,20 @@ impl Logs {
         self.logs.get(start..end)
     }
 
-    /// Push a LogEntry to the list.
-    pub fn extend(&mut self, prev: &LogInfo, entries: Vec<LogEntry>) -> Result<(), Vec<LogEntry>>{
-        let last_log_info = self.logs.last()
-            .map(LogInfo::from)
-            .unwrap();
-        if last_log_info != *prev {
+    /// Try to merge some log entries to the list, requires the prev loginfo 
+    /// must match any of the log in the list. 
+    /// If matched, remove all logs after prev if there are any, then 
+    /// extend entries in the tail.
+    /// Otherwise, return Err(entries).
+    pub fn try_merge(&mut self, prev: &LogInfo, entries: Vec<LogEntry>) -> Result<(), Vec<LogEntry>>{
+        let diff = if prev.index < self.offset {
+            return Err(entries);
+        } else { prev.index - self.offset };
+
+        if let None = self.logs.get(diff) {
             return Err(entries);
         }
+        self.logs.drain((diff+1)..);
 
         self.cmd_cnt += entries.iter()
             .fold(0, |acc, et| match &et.log_type {
@@ -197,9 +189,14 @@ impl Logs {
     /// Update last committed index, this will cause the logs between
     /// [old_lci+1, new_lci] applied.
     pub fn update_commit(&mut self, lci: usize) {
+        if lci <= self.lci {
+            return;
+        }
+
+        let lci = lci.min(self.logs.last().unwrap().index);
         let apply_range = (self.lci+1)..=lci;
-        let entries = match self.logs.get(apply_range.clone()) {
-            None => fatal!("Invalid range {apply_range:?}, 
+        let entries = match self.get_range(&apply_range) {
+            None => fatal!("{self}: Invalid range {apply_range:?}, 
                 expected logs range {:?}", self.logs_range()),
             Some(ets) => ets.into_iter().cloned()
                 .filter_map(LogEntry::into)
@@ -261,5 +258,11 @@ impl Into<Option<(usize, Vec<u8>)>> for LogEntry {
             LogType::Command { command, index } => Some((index, command)),
             _ => None
         }
+    }
+}
+
+impl std::fmt::Display for Logs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[Logs {}]", self.me)
     }
 }

@@ -50,6 +50,7 @@ impl Leader {
             },
 
             Event::UpdateCommit(lci) => {
+                info!("{self}: update commit to {lci}");
                 self.logs.update_commit(lci);
             },
 
@@ -92,7 +93,7 @@ impl Leader {
         } else {
             self.core.term = args.term;
             let _ = self.ev_q.put(TO_FOLLOWER);
-            EntryStatus::Retry
+            EntryStatus::Hold
         };
         let reply = AppendEntriesReply {
             from: self.core.me,
@@ -153,16 +154,26 @@ impl From<RoleCore> for Leader {
         // this will be the first log entry in its reign.
         let noop_idx = logs.push_noop(core.term);
         let lci = logs.lci();
+
+        #[cfg(feature = "no_debug")]
         let ld_logs = LdLogs::from(logs);
+        #[cfg(not(feature = "no_debug"))]
+        let ld_logs = LdLogs::from((core.me, logs));
 
         // spawn heartbeat senders
         let active = Arc::new(AtomicBool::new(true));
         let repl_counter = ReplCounter::new(core.me, core.rpc_client.n(), 
             lci, ev_q.clone(), active.clone());
-        repl_counter.watch_idx(noop_idx);
+
+        for idx in (lci+1)..=noop_idx {
+            repl_counter.watch_idx(idx);
+        }
 
         for peer in core.rpc_client.peers() {
+            #[cfg(feature = "no_debug")]
             let repl_logs = ReplLogs::from(&ld_logs);
+            #[cfg(not(feature = "no_debug"))]
+            let repl_logs = ReplLogs::from((peer.to(), &ld_logs));
             tokio::spawn(Replicator::new(
                 core.me,
                 core.term,
@@ -196,6 +207,7 @@ impl Into<RoleCore> for Leader {
     }
 }
 
+#[cfg(not(feature = "no_debug"))]
 impl std::fmt::Display for Leader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Leader[{}, term={}]", self.core.me, self.core.term)

@@ -26,6 +26,7 @@ pub(crate) struct RaftHandle {
 
 // The Raft object to implement a single raft node.
 pub struct Raft {
+    pub me: usize,
     ev_q: Arc<EvQueue>,
 }
 
@@ -70,7 +71,7 @@ impl Raft {
             ev_q: ev_q.clone(),
         };
 
-        let logs = Logs::new(apply_ch);
+        let logs = Logs::new(me, apply_ch);
 
         core.rpc_client.add_service("RpcService".to_string(), 
             Box::new(RpcService::new(handle))).await;
@@ -85,6 +86,7 @@ impl Raft {
         info!("Raft instance {me} started.");
 
         Self {
+            me,
             ev_q,
         }
     }
@@ -144,6 +146,7 @@ impl Raft {
 
     /// Kill the server.
     pub async fn kill(&self) {
+        info!("I'm killed");
         self.ev_q.just_put(Event::Kill)
             .expect("Kill ev should not be rejected");
     }
@@ -153,6 +156,7 @@ impl Raft {
             match ev {
                 Event::Kill => {
                     ev_ch_rx.close();
+                    role.stop();
                     break;
                 },
                 ev => role.process(ev).await
@@ -163,6 +167,12 @@ impl Raft {
 
 impl std::fmt::Display for RaftCore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[Raft {},term={}]", self.me, self.term)
+        write!(f, "[RaftCore {},term={}]", self.me, self.term)
+    }
+}
+
+impl std::fmt::Display for Raft {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[Raft {}]", self.me)
     }
 }
