@@ -133,17 +133,15 @@ impl ClientEnd {
             return Err(DISCONNECTED);
         }
 
-        let res_enc = match rx.await {
-            Ok(r) => r?,
-            Err(_) => {
-                // the sender is dropped without sending, 
-                // which means the message is dropped.
-                return Err(TIMEOUT);
-            }
-        };
-        
-        let res: R = bincode::deserialize(&res_enc[..]).unwrap();
-        Ok(res)
+        match rx.await {
+            Ok(res) => {
+                let res: R = bincode::deserialize(&res?[..]).unwrap();
+                Ok(res)
+            },
+            // the sender is dropped without sending, 
+            // which means the message is dropped.
+            Err(_) => Err(TIMEOUT)
+        }
     }
 }
 

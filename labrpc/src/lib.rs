@@ -55,6 +55,8 @@ mod tests {
         pub fn hello(&self, name: String) -> String {
             format!("Hello, {name}")
         }
+
+        pub fn no_response(&self, _: Vec<u8>) {}
     }
 
     #[tokio::test]
@@ -151,5 +153,37 @@ mod tests {
 
         println!("{} responses in {} tries", cnt, TRIES);
         println!("Average RTT: {}ms", rtt/(TRIES as u128));
+    }
+
+    /// By sending 100 * 100 byte packages, collect the byte count 
+    /// and rpc count.
+    #[tokio::test]
+    async fn count() {
+        const N: usize = 2;
+        let mut network = Network::new(N)
+            .reliable(false)
+            .long_delay(false);
+        let mut clients = Vec::with_capacity(N);
+        for i in 0..N {
+            let cli = network.make_client(i).await;
+            cli.add_service(
+                "Hello".to_string(),
+                Box::new(Hello)
+            ).await;
+            clients.push(cli);
+        }
+
+        let pack = vec![0u8; 100];
+        let pack_serde_len = bincode::serialize(&pack).unwrap().len();
+        let c0 = &clients[0];
+
+        for _ in 0..100 {
+            for peer in c0.peers() {
+                let _ = peer.call::<_, ()>("Hello.no_response", &pack).await;
+            }
+        }
+
+        println!("RCP count: {}, byte count: {}", network.rpc_cnt(), network.byte_cnt());
+        println!("Expected package byte count: {}", pack_serde_len * 100);
     }
 }
