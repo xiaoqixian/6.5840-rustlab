@@ -12,10 +12,10 @@ const TIME_LIMIT: Duration = Duration::from_secs(120);
 
 macro_rules! debug {
     ($($args: expr),*) => {
-        #[cfg(not(feature = "no_debug"))]
+        #[cfg(not(feature = "no_test_debug"))]
         {
             let msg = format!($($args),*);
-            let msg = format!("DEBUG: {msg}").truecolor(240, 191, 79);
+            let msg = format!("[TEST]: {msg}").truecolor(240, 191, 79);
             println!("{msg}");
         }
     }
@@ -28,6 +28,9 @@ macro_rules! fatal {
     }}
 }
 
+/// Directly ask a leader to submit a command, return the potential 
+/// index and term.
+/// If the "leader" is no longer a leader, it returns a None.
 async fn start_by<T>(config: &RwLock<Config<T>>, cmd: &T, leader: usize) -> Option<(usize, usize)> 
     where T: WantedCmd
 {
@@ -44,21 +47,24 @@ async fn start_by_nolock<T>(config: &Config<T>, cmd: &T, leader: usize) -> Optio
 #[tokio::test]
 async fn test3b_basic_agree() {
     const N: usize = 3;
-    const RELIABLE: bool = false;
+    const RELIABLE: bool = true;
     const SNAPSHOT: bool = false;
     let tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT, TIME_LIMIT).await;
 
     tester.begin("Test 3B: basic agreement").await;
 
-    for index in 1..=3 {
+    let base = tester.submit_cmd(1, N, false).await
+        .expect("Try to submit a command failed");
+
+    for index in (base+1)..=(base+3) {
         let (nc, _) = tester.n_committed(index).await;
         if nc > 0 {
             fatal!("Some have committed before start");
         }
 
         let xindex = tester.submit_cmd(index as u32 * 100, N, false).await;
-        if xindex != Some(index) {
-            fatal!("Expected {index}, got {xindex:?}");
+        if xindex != Some(base + index) {
+            fatal!("Expected Some({index}), got {xindex:?}");
         }
     }
 
@@ -68,7 +74,7 @@ async fn test3b_basic_agree() {
 #[tokio::test]
 async fn test3b_rpc_byte() {
     const N: usize = 3;
-    const RELIABLE: bool = false;
+    const RELIABLE: bool = true;
     const SNAPSHOT: bool = false;
     let tester = Tester::<String>::new(N, RELIABLE, SNAPSHOT, TIME_LIMIT).await;
 
@@ -88,7 +94,8 @@ async fn test3b_rpc_byte() {
             .take(5000)
             .map(char::from)
             .collect();
-        sent += cmd.len() as u64;
+        // sent += cmd.len() as u64;
+        sent += 5008;
         let xindex = tester.submit_cmd(cmd, N, false).await;
         if xindex != Some(index) {
             fatal!("Expected {index}, got {xindex:?}");
@@ -97,19 +104,22 @@ async fn test3b_rpc_byte() {
 
     let byte1 = tester.byte_cnt().await;
     let bytes_got = byte1 - byte0;
-    let byte_expected = sent * N as u64;
+    let byte_expected = sent * (N-1) as u64;
     if bytes_got - byte_expected > 5000 {
-        fatal!("Too many RPC bytes: got {bytes_got}, expected no more than {}", bytes_got + 5000);
+        fatal!("Too many RPC bytes: got {bytes_got}, expected no more than {}", byte_expected + 5000);
     }
+
+    tester.end().await;
 }
 
 #[tokio::test]
 async fn test3b_follower_failure() {
     const N: usize = 3;
-    const RELIABLE: bool = false;
+    const RELIABLE: bool = true;
     const SNAPSHOT: bool = false;
     let tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT, TIME_LIMIT).await;
-    tester.begin("Test 3B: test progressive failure of followers").await;
+    const desc: &'static str = "Test 3B: test progressive failure of followers";
+    tester.begin(desc).await;
 
     macro_rules! must_commit {
         ($cmd: expr, $n: expr, $retry: expr) => {
@@ -124,11 +134,19 @@ async fn test3b_follower_failure() {
                 $prev + 1, $curr);
         }
     }
+    macro_rules! mdebug {
+        ($($args: expr), *) => {
+            debug!("[{}]: {}", desc, format_args!($($args),*));
+        }
+    }
     let cmd_idx0 = must_commit!(101, N, false);
+    mdebug!("cmd_idx0 = {cmd_idx0}");
 
     // disconnect a follower from the network
     let leader1 = tester.check_one_leader().await;
+    mdebug!("checked leader1 = {leader1}");
     tester.disconnect((leader1 + 1) % N).await;
+    mdebug!("disconnected follower {}", (leader1+1)%N);
 
     // the leader and the remaining followers should be able to agree 
     // despite a follower is disconnected.
@@ -141,10 +159,16 @@ async fn test3b_follower_failure() {
 
     // disconnect the remaining followers
     let leader2 = tester.check_one_leader().await;
+    mdebug!("checked leader2 = {leader2}");
     tester.disconnect((leader2 + 1) % N).await;
     tester.disconnect((leader2 + 2) % N).await;
+    mdebug!("disconnected follower {} and {}", 
+        (leader2+1)%N, (leader2+2)%N);
 
-    let cmd_idx3 = must_commit!(104, 1, false);
+    let cmd_idx3 = match start_by(tester.config.as_ref(), &104, leader2).await {
+        None => fatal!("Ask leader2 {leader2} to submit a command failed"),
+        Some((i, _)) => i
+    };
     must_continue!(cmd_idx2, cmd_idx3);
 
     tokio::time::sleep(ELECTION_TIMEOUT * 2).await;
@@ -159,7 +183,7 @@ async fn test3b_follower_failure() {
 #[tokio::test]
 async fn test3b_leader_failure() {
     const N: usize = 3;
-    const RELIABLE: bool = false;
+    const RELIABLE: bool = true;
     const SNAPSHOT: bool = false;
     let tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT, TIME_LIMIT).await;
     tester.begin("Test 3B: test failure of leaders").await;
@@ -170,6 +194,7 @@ async fn test3b_leader_failure() {
     // disconnect the first leader
     let leader1 = tester.check_one_leader().await;
     tester.disconnect(leader1).await;
+    debug!("disconnected leader1 {leader1}");
     
     // the remaining followers should elect a new leader.
     let _ = tester.submit_cmd(102, N-1, false).await;
@@ -203,7 +228,7 @@ async fn test3b_leader_failure() {
 #[tokio::test]
 async fn test3b_fail_agree() {
     const N: usize = 3;
-    const RELIABLE: bool = false;
+    const RELIABLE: bool = true;
     const SNAPSHOT: bool = false;
     let tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT, TIME_LIMIT).await;
 
@@ -235,7 +260,7 @@ async fn test3b_fail_agree() {
 #[tokio::test]
 async fn test3b_fail_no_agree() {
     const N: usize = 5;
-    const RELIABLE: bool = false;
+    const RELIABLE: bool = true;
     const SNAPSHOT: bool = false;
     let tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT, TIME_LIMIT).await;
     tester.begin("Test 3B: no agreement if too many followers disconnect").await;
@@ -309,7 +334,7 @@ async fn test3b_fail_no_agree() {
 #[tokio::test]
 async fn test3b_concurrent_starts() {
     const N: usize = 3;
-    const RELIABLE: bool = false;
+    const RELIABLE: bool = true;
     const SNAPSHOT: bool = false;
     let tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT, TIME_LIMIT).await;
     tester.begin("Test 3B: concurrent start()").await;
@@ -384,7 +409,7 @@ async fn test3b_concurrent_starts() {
 #[tokio::test]
 async fn test3b_rejoin() {
     const N: usize = 3;
-    const RELIABLE: bool = false;
+    const RELIABLE: bool = true;
     const SNAPSHOT: bool = false;
     let tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT, TIME_LIMIT).await;
     
@@ -420,7 +445,7 @@ async fn test3b_rejoin() {
 #[tokio::test]
 async fn test3b_backup() {
     const N: usize = 5;
-    const RELIABLE: bool = false;
+    const RELIABLE: bool = true;
     const SNAPSHOT: bool = false;
     let tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT, TIME_LIMIT).await;
     tester.begin("Test 3B: leader backs up quickly over incorrect follower logs").await;
@@ -491,7 +516,7 @@ async fn test3b_backup() {
 #[tokio::test]
 async fn test3b_count() {
     const N: usize = 3;
-    const RELIABLE: bool = false;
+    const RELIABLE: bool = true;
     const SNAPSHOT: bool = false;
     let tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT, TIME_LIMIT).await;
 

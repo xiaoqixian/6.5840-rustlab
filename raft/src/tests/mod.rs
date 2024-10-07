@@ -34,7 +34,7 @@ macro_rules! debug {
     ($($args: expr),*) => {
         #[cfg(not(feature = "no_test_debug"))]
         {
-            let msg = format!("[TEST] {}", format_args!($($args),*))
+            let msg = format!("[CONFIG] {}", format_args!($($args),*))
                 .truecolor(240, 191, 79);
             println!("{msg}");
         }
@@ -53,7 +53,6 @@ struct Node {
 struct Config<T> {
     n: usize,
     net: Network,
-    bytes: usize,
     pub nodes: Vec<Node>,
     logs: Arc<Mutex<Logs<T>>>,
     
@@ -90,7 +89,6 @@ impl<T> Tester<T>
     pub async fn new(n: usize, reliable: bool, snapshot: bool, time_limit: Duration) -> Self {
         let config = Config {
             n,
-            bytes: 0,
             net: Network::new(n).reliable(reliable).long_delay(true),
             logs: Arc::new(Mutex::new(Logs {
                 logs: vec![Vec::new(); n],
@@ -146,16 +144,19 @@ impl<T> Tester<T>
         let nbytes = config.net.byte_cnt();
         let ncmd = config.logs.lock().await.max_cmd_idx;
         
+        for node in config.nodes.iter_mut() {
+            if let Some(raft) = node.raft.take() {
+                if let Err(_) = tokio::time::timeout(Duration::from_secs(1), raft.kill()).await {
+                    fatal!("Raft killing timeout, expect no more than 1sec");
+                }
+            }
+        }
+        config.net.close();
+
         greet!(" ... Passed --");
         greet!(" {}ms, {} peers, {} rpc, {} bytes, {} cmds", 
             t.as_millis(), config.n, nrpc, nbytes, ncmd);
 
-        for node in config.nodes.iter_mut() {
-            if let Some(raft) = node.raft.take() {
-                raft.kill().await;
-            }
-        }
-        config.net.close();
     }
 
     async fn start1(&self, id: usize, snapshot: bool) {
@@ -177,7 +178,13 @@ impl<T> Tester<T>
         let persister = node.persister.clone().await;
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let raft = Raft::new(client, id, persister, tx).await;
+        let raft = match tokio::time::timeout(
+            Duration::from_secs(1),
+            Raft::new(client, id, persister, tx)
+        ).await {
+            Ok(raft) => raft,
+            Err(_) => fatal!("Raft instantiation timeout, expect no more than 1sec")
+        };
         
         node.raft = Some(raft);
         
@@ -279,58 +286,67 @@ impl<T> Tester<T>
         }
     }
 
-    /// Commit a command, ask every node if it is a leader, 
-    /// if is, ask it to commit a command.
-    /// If the command is successfully committed, return its index.
-    async fn submit_cmd(&self, cmd: T, expected_servers: usize, retry: bool) -> Option<usize> {
-        let cmd_bin = bincode::serialize(&cmd).unwrap();
+    /// Wait a command with index to be applied by at least `expected` number of 
+    /// servers.
+    /// This will wait forever, so it's usually used with timeout function.
+    async fn wait_commit(&self, index: usize, cmd: &T, expected: usize) -> usize {
+        loop {
+            match self.n_committed(index).await {
+                (cnt, Some(cmt_cnd)) => {
+                    if cnt >= expected && cmt_cnd == *cmd {
+                        break index;
+                    }
+                },
+                _ => tokio::time::sleep(Duration::from_millis(20)).await
+            }
+        }
+    }
 
-        tokio::time::timeout(Duration::from_secs(10), async move {
-            let cmd = Arc::new(cmd);
-            loop {
+    async fn must_submit(&self, cmd: T, expected: usize, retry: bool) -> usize {
+        let cmd_bin = bincode::serialize(&cmd).unwrap();
+        loop {
+            // iterate all raft nodes, ask them to start a command.
+            // if success, return it.
+            let cmd_idx = match {
                 let mut index = None;
-                for raft in self.config.write().await.nodes.iter_mut()
-                    .filter_map(|node| node.raft.as_mut())
+                for raft in self.config.read().await.nodes.iter()
+                    .filter(|node| node.connected)
+                    .filter_map(|node| node.raft.as_ref())
                 {
-                    if let Some((idx, _)) = raft.start(cmd_bin.clone()).await {
-                        index = Some(idx);
+                    if let Some((cmd_idx, _)) = raft.start(cmd_bin.clone()).await {
+                        index = Some(cmd_idx);
                         break;
                     }
                 }
-
-                if let Some(index) = index {
-                    let check_commit = {
-                        let cmd = cmd.clone();
-                        tokio::time::timeout(
-                            Duration::from_secs(2),
-                            async move {
-                                loop {
-                                    match self.n_committed(index).await {
-                                        (cnt, Some(cmt_cmd)) => {
-                                            if cnt >= expected_servers && cmt_cmd == *cmd {
-                                                break index;
-                                            }
-                                        },
-                                        _ => {}
-                                    }
-                                    tokio::time::sleep(Duration::from_millis(20)).await;
-                                }
-                            }
-                        )
-                    };
-                    match check_commit.await {
-                        Ok(index) => break index,
-                        Err(_) => {
-                            if !retry {
-                                fatal!("One cmd {cmd} failed to reach agreement");
-                            }
-                        }
-                    }
-                } else {
+                index
+            } {
+                None => {
                     tokio::time::sleep(Duration::from_millis(50)).await;
+                    continue;
+                },
+                Some(idx) => idx
+            };
+            debug!("Leader submit command at {cmd_idx}");
+
+            match tokio::time::timeout(Duration::from_secs(2), 
+                self.wait_commit(cmd_idx, &cmd, expected)).await
+            {
+                Ok(index) => break index,
+                Err(_) => {
+                    if !retry {
+                        fatal!("One cmd {cmd} failed to reach agreement");
+                    }
                 }
             }
-        }).await.ok()
+        }
+    }
+
+    /// Commit a command, ask every node if it is a leader, 
+    /// if is, ask it to commit a command.
+    /// If the command is successfully committed, return its index.
+    async fn submit_cmd(&self, cmd: T, expected: usize, retry: bool) -> Option<usize> {
+        tokio::time::timeout(Duration::from_secs(10), 
+            self.must_submit(cmd, expected, retry)).await.ok()
     }
 
     /// Check how many nodes think a command at index is committed.
@@ -434,7 +450,6 @@ impl<T> Applier<T>
     /// if ok, insert this command into logs.
     /// WARN: check_logs assume the Config.lock is hold by the caller.
     async fn check_logs(&self, id: usize, cmd_idx: usize, cmd: Vec<u8>) {
-        debug!("{id} applied command {cmd_idx}");
         let cmd_value = bincode::deserialize_from::<_, T>(&cmd[..])
             .unwrap();
 

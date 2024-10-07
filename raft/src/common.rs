@@ -5,11 +5,11 @@
 use std::{ops::Range, time::Duration};
 use rand::Rng;
 
-pub const HEARTBEAT_TIMEOUT: Range<u64> = 300..600;
+pub const HEARTBEAT_TIMEOUT: Range<u64> = 300..400;
 pub const ELECTION_TIMEOUT: Range<u64> = 900..1100;
 
-pub const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(100);
-pub const RPC_RETRY_WAIT: Duration = Duration::from_millis(20);
+pub const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(50);
+pub const RPC_RETRY_WAIT: Duration = Duration::from_millis(100);
 pub const DISCONNECT_WAIT: Duration = Duration::from_millis(200);
 pub const NET_FAIL_WAIT: Duration = Duration::from_millis(100);
 
