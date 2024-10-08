@@ -3,16 +3,36 @@
 // Author: https://github.com/xiaoqixian
 
 use std::time::Duration;
-use super::Tester;
 
-const ELECTION_TIMEOUT: Duration = Duration::from_secs(1);
+use super::{Tester, ELECTION_TIMEOUT};
+
+const TIME_LIMIT: Duration = Duration::from_secs(120);
+
+use colored::Colorize;
+macro_rules! warn {
+    ($($args: expr),*) => {{
+        let msg = format_args!($($args),*);
+        let msg = format!("[TEST WARNING] {msg}").truecolor(255,175,0);
+        println!("{msg}");
+    }}
+}
+macro_rules! debug {
+    ($($args: expr),*) => {
+        #[cfg(not(feature = "no_test_debug"))]
+        {
+            let msg = format!("[TEST] {}", format_args!($($args),*))
+                .truecolor(240, 191, 79);
+            println!("{msg}");
+        }
+    }
+}
 
 #[tokio::test]
-async fn test_3a_initial_election() {
+async fn test3a_initial_election() {
     const N: usize = 3;
     const RELIABLE: bool = false;
     const SNAPSHOT: bool = false;
-    let tester = Tester::new(N, RELIABLE, SNAPSHOT).await;
+    let tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT, TIME_LIMIT).await;
 
     tester.begin("Test (3A): initial election").await;
     // sleep a while to avoid racing with followers learning 
@@ -24,19 +44,20 @@ async fn test_3a_initial_election() {
     let term2 = tester.check_terms().await;
 
     if term1 != term2 {
-        println!("Warning: term changed even though there are no failures");
+        warn!("Warning: term changed even though there are no failures");
     }
 
     tester.check_one_leader().await;
+
     tester.end().await;
 }
 
 #[tokio::test]
-async fn test_3a_reelection() {
+async fn test3a_reelection() {
     const N: usize = 3;
     const RELIABLE: bool = false;
     const SNAPSHOT: bool = false;
-    let tester = Tester::new(N, RELIABLE, SNAPSHOT).await;
+    let tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT, TIME_LIMIT).await;
 
     tester.begin("Test (3A): election after network failure").await;
 
@@ -53,39 +74,42 @@ async fn test_3a_reelection() {
 
     // if there's no quorum, no new leader should be elected.
     tester.disconnect(leader2).await;
-    tester.disconnect((leader2 + 1) % N as u32).await;
+    tester.disconnect((leader2 + 1) % N).await;
     tokio::time::sleep(ELECTION_TIMEOUT * 2).await;
     tester.check_no_leader().await;
 
     // if a quorum arises, it should elect a leader.
-    tester.connect((leader2 + 1) % N as u32).await;
+    tester.connect((leader2 + 1) % N).await;
     tester.check_one_leader().await;
 
     tester.end().await;
 }
 
 #[tokio::test]
-async fn test_3a_many_election() {
+async fn test3a_many_elections() {
     const N: usize = 7;
     const RELIABLE: bool = false;
     const SNAPSHOT: bool = false;
-    let tester = Tester::new(N, RELIABLE, SNAPSHOT).await;
+    let tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT, TIME_LIMIT).await;
 
     tester.begin("Test (3A): multiple elections").await;
 
     tester.check_one_leader().await;
 
-    for _ in 0..10 {
-        let i1 = rand::random::<u32>() % N as u32;
-        let i2 = rand::random::<u32>() % N as u32;
-        let i3 = rand::random::<u32>() % N as u32;
+    for i in 0..10 {
+        debug!("===== Round {i} ======");
+        let i1 = rand::random::<usize>() % N;
+        let i2 = rand::random::<usize>() % N;
+        let i3 = rand::random::<usize>() % N;
+        debug!("-- disconnected {i1}, {i2}, {i2}");
         tester.disconnect(i1).await;
         tester.disconnect(i2).await;
         tester.disconnect(i3).await;
 
         // either the current leader should be alive, 
         // or the remaing four should elect a new one.
-        tester.check_one_leader().await;
+        let leader = tester.check_one_leader().await;
+        debug!("Round {i} leader = {leader}");
 
         tester.connect(i1).await;
         tester.connect(i2).await;
