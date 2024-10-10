@@ -25,7 +25,8 @@ macro_rules! fatal {
 
 macro_rules! greet {
     ($($args: expr),*) => {{
-        let msg = format!($($args),*).truecolor(178,225,167);
+        // let msg = format!($($args),*).truecolor(178,225,167);
+        let msg = format!($($args),*).truecolor(135, 180, 106);
         println!("{msg}");
     }}
 }
@@ -44,7 +45,7 @@ macro_rules! debug {
 const ELECTION_TIMEOUT: Duration = Duration::from_secs(1);
 
 struct Node {
-    last_applied: usize,
+    // last_applied: usize,
     persister: Persister,
     raft: Option<Raft>,
     connected: bool
@@ -61,6 +62,7 @@ struct Config<T> {
 
 struct Logs<T> {
     logs: Vec<Vec<T>>,
+    apply_err: Vec<Option<String>>,
     max_cmd_idx: usize
 }
 
@@ -92,11 +94,12 @@ impl<T> Tester<T>
             net: Network::new(n).reliable(reliable).long_delay(true),
             logs: Arc::new(Mutex::new(Logs {
                 logs: vec![Vec::new(); n],
+                apply_err: vec![None; n],
                 max_cmd_idx: 0
             })),
             nodes: std::iter::repeat_with(
                 || Node {
-                    last_applied: 0,
+                    // last_applied: 0,
                     persister: Persister::default(),
                     raft: None,
                     connected: true
@@ -292,8 +295,9 @@ impl<T> Tester<T>
     async fn wait_commit(&self, index: usize, cmd: &T, expected: usize) -> usize {
         loop {
             match self.n_committed(index).await {
-                (cnt, Some(cmt_cnd)) => {
-                    if cnt >= expected && cmt_cnd == *cmd {
+                (cnt, Some(cmt_cmd)) => {
+                    debug!("wait_commit: cnt = {cnt}, cmt_cmd = {cmt_cmd}, cmd = {cmd}");
+                    if cnt >= expected && cmt_cmd == *cmd {
                         break index;
                     }
                 },
@@ -309,12 +313,16 @@ impl<T> Tester<T>
             // if success, return it.
             let cmd_idx = match {
                 let mut index = None;
-                for raft in self.config.read().await.nodes.iter()
-                    .filter(|node| node.connected)
-                    .filter_map(|node| node.raft.as_ref())
+                // for raft in self.config.read().await.nodes.iter()
+                //     .filter(|node| node.connected)
+                //     .filter_map(|node| node.raft.as_ref())
+                for (raft_i, raft) in self.config.read().await.nodes.iter().enumerate()
+                    .filter(|(_, node)| node.connected)
+                    .filter_map(|(i, node)| node.raft.as_ref().map(|nd| (i, nd)))
                 {
                     if let Some((cmd_idx, _)) = raft.start(cmd_bin.clone()).await {
                         index = Some(cmd_idx);
+                        debug!("Command {cmd} submitted by raft {raft_i}, index = {cmd_idx}");
                         break;
                     }
                 }
@@ -326,18 +334,19 @@ impl<T> Tester<T>
                 },
                 Some(idx) => idx
             };
-            debug!("Leader submit command at {cmd_idx}");
+            // debug!("Leader submit command at {cmd_idx}");
 
             match tokio::time::timeout(Duration::from_secs(2), 
                 self.wait_commit(cmd_idx, &cmd, expected)).await
             {
                 Ok(index) => break index,
-                Err(_) => {
+                Err(e) => {
                     if !retry {
                         fatal!("One cmd {cmd} failed to reach agreement");
                     }
                 }
             }
+            debug!("after wait_commit");
         }
     }
 
@@ -355,10 +364,13 @@ impl<T> Tester<T>
     async fn n_committed(&self, idx: usize) -> (usize, Option<T>) {
         let mut cnt = 0usize;
         let mut cmd = None;
-        for log in self.config.read().await
-            .logs.lock().await
-            .logs.iter()
-        {
+        let config = self.config.read().await;
+        let logs = config.logs.lock().await;
+        for (i, log) in logs.logs.iter().enumerate() {
+            if let Some(err_msg) = &logs.apply_err[i] {
+                fatal!("{err_msg}");
+            }
+
             if let Some(cmd_i) = log.get(idx) {
                 match &cmd {
                     None => cmd = Some(cmd_i.clone()),
@@ -435,10 +447,12 @@ impl<T> Applier<T>
     where T: WantedCmd
 {
     async fn run(mut self, snap: bool) {
+        let mut failed = false;
         while let Some(msg) = self.apply_ch.recv().await {
+            if failed { continue; }
             match msg {
                 ApplyMsg::Command {index, command} => {
-                    self.check_logs(self.id, index, command).await;
+                    failed = self.check_logs(self.id, index, command).await.is_ok();
                 },
                 ApplyMsg::Snapshot {..} if snap => {},
                 _ => fatal!("Snapshot unexpected")
@@ -446,15 +460,28 @@ impl<T> Applier<T>
         }
     }
 
+    async fn check_logs(&self, id: usize, cmd_idx: usize, cmd: Vec<u8>) -> Result<(), ()> {
+        let mut logs = self.logs.lock().await;
+        match self.cross_check(self.id, cmd_idx, cmd, &mut logs.logs) {
+            Ok(_) => {
+                logs.max_cmd_idx = logs.max_cmd_idx.max(cmd_idx);
+                Ok(())
+            },
+            Err(msg) => {
+                debug_assert!(logs.apply_err[id].is_none());
+                logs.apply_err[id] = Some(msg);
+                Err(())
+            }
+        }
+    }
+
     /// Check applied commands index and term consistency,
     /// if ok, insert this command into logs.
     /// WARN: check_logs assume the Config.lock is hold by the caller.
-    async fn check_logs(&self, id: usize, cmd_idx: usize, cmd: Vec<u8>) {
+    fn cross_check(&self, id: usize, cmd_idx: usize, cmd: Vec<u8>,
+        logs: &mut Vec<Vec<T>>) -> Result<(), String> {
         let cmd_value = bincode::deserialize_from::<_, T>(&cmd[..])
             .unwrap();
-
-        let mut logs_guard = self.logs.lock().await;
-        let logs = &mut logs_guard.logs;
 
         // the command index can only be equal to the length of the 
         // corresponding log list.
@@ -462,10 +489,10 @@ impl<T> Applier<T>
         // if less, the log is applied before, which is not allowed 
         // for a state machine.
         if cmd_idx > logs[id].len() {
-            fatal!("Server {id} apply out of order {}", cmd_idx);
+            return Err(format!("Server {id} apply out of order {cmd_idx}"));
         }
         else if cmd_idx < logs[id].len() {
-            fatal!("Server {id} applied the log {} before", cmd_idx);
+            return Err(format!("Server {id} has applied the log {cmd_idx} before"));
         }
 
         // check all logs of other nodes, if the index exist in the logs
@@ -474,17 +501,15 @@ impl<T> Applier<T>
         for (i, log) in logs.iter().enumerate() {
             match log.get(cmd_idx) {
                 Some(val) if *val != cmd_value => {
-                    fatal!("commit index = {} server={} {} != server={} {}",
-                        cmd_idx, 
-                        id, cmd_value,
-                        i, val
-                    );
+                    let err_msg = format!("commit index = {cmd_idx} 
+                        server={id} {cmd_value} != server={i} {val}");
+                    return Err(err_msg);
                 },
                 _ => {}
             }
         }
 
         logs[id as usize].push(cmd_value);
-        logs_guard.max_cmd_idx = usize::max(logs_guard.max_cmd_idx, cmd_idx);
+        Ok(())
     }
 }

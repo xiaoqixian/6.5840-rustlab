@@ -77,7 +77,7 @@ macro_rules! debug {
         {
             use colored::Colorize;
             let msg = format!("[DEBUG] {}", format_args!($($args), *))
-                .truecolor(245, 226, 180);
+                .yellow();
             println!("{msg}");
         }
     }

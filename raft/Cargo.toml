@@ -15,7 +15,7 @@ colored = "2.1.0"
 bit-vec = "0.8.0"
 
 [features]
-default = ["info_log_level"]
+default = ["no_debug"]
 info_log_level = ["warn_log_level"]
 warn_log_level = ["error_log_level"]
 error_log_level = []
