@@ -22,7 +22,7 @@ mod err {
 
 struct Hello<T>(T);
 
-use labrpc_macros::rpc;
+use macros::rpc;
 
 trait M {}
 

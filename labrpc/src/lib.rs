@@ -46,7 +46,7 @@ pub(crate) struct Msg {
 mod tests {
     use std::time::Instant;
 
-    use labrpc_macros::rpc;
+    use macros::rpc;
     use crate::{err::{self, CLASS_NOT_FOUND}, network::Network, CallResult, Service};
 
     struct Hello;

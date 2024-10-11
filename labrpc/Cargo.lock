@@ -131,22 +131,10 @@ dependencies = [
  "async-trait",
  "auto-from",
  "bincode",
- "labrpc-macros",
+ "macros",
  "rand",
  "serde",
  "tokio",
-]
-
-[[package]]
-name = "labrpc-macros"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "bincode",
- "proc-macro2",
- "quote",
- "serde",
- "syn",
 ]
 
 [[package]]
@@ -163,6 +151,18 @@ checksum = "07af8b9cdd281b7915f413fa73f29ebd5d55d0d3f0155584dade1ff18cea1b17"
 dependencies = [
  "autocfg",
  "scopeguard",
+]
+
+[[package]]
+name = "macros"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bincode",
+ "proc-macro2",
+ "quote",
+ "serde",
+ "syn",
 ]
 
 [[package]]
