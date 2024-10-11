@@ -88,7 +88,7 @@ impl RpcService {
     }
 }
 
-#[labrpc_macros::rpc]
+#[macros::rpc]
 impl RpcService {
     /// The AppendEntries event may not be processed.
     /// For instance, the Raft node may already be dead.

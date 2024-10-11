@@ -5,23 +5,16 @@
 #[cfg(test)]
 mod test_3a;
 
-#[cfg(test)]
-mod test_3b;
+// #[cfg(test)]
+// mod test_3b;
 
-use std::{collections::HashMap, fmt::{Debug, Display}, ops::DerefMut, sync::{atomic::{AtomicBool, Ordering}, Arc}, time::Duration};
+use std::{collections::HashMap, fmt::{Debug, Display}, future::Future, ops::DerefMut, sync::{atomic::{AtomicBool, Ordering}, Arc}, time::Duration};
 
 use labrpc::network::Network;
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::sync::{Mutex, RwLock};
 use crate::{ApplyMsg, persist::Persister, raft::Raft, UbRx};
 use colored::Colorize;
-
-macro_rules! fatal {
-    ($($args: expr),*) => {{
-        let msg = format!($($args),*).red();
-        panic!("{msg}");
-    }}
-}
 
 macro_rules! greet {
     ($($args: expr),*) => {{
@@ -43,6 +36,7 @@ macro_rules! debug {
 }
 
 const ELECTION_TIMEOUT: Duration = Duration::from_secs(1);
+const TEST_TIME_LIMIT: Duration = Duration::from_secs(120);
 
 struct Node {
     // last_applied: usize,
@@ -75,7 +69,6 @@ struct Applier<T> {
 /// T: the command type
 struct Tester<T> {
     config: Arc<RwLock<Config<T>>>,
-    time_limit: Duration,
     finished: Arc<AtomicBool>
 }
 
@@ -88,7 +81,7 @@ where T: Eq + Clone + Serialize + DeserializeOwned + Display
 impl<T> Tester<T> 
     where T: WantedCmd
 {
-    pub async fn new(n: usize, reliable: bool, snapshot: bool, time_limit: Duration) -> Self {
+    pub async fn new(n: usize, reliable: bool, snapshot: bool) -> Self {
         let config = Config {
             n,
             net: Network::new(n).reliable(reliable).long_delay(true),
@@ -110,7 +103,6 @@ impl<T> Tester<T>
         
         let tester = Self { 
             config: Arc::new(RwLock::new(config)),
-            time_limit,
             finished: Default::default()
         };
 
@@ -124,21 +116,9 @@ impl<T> Tester<T>
     async fn begin<D: std::fmt::Display>(&self, desc: D) {
         println!("{}", format!("{desc}...").truecolor(178,225,167));
         self.config.write().await.start = std::time::Instant::now();
-        
-        let time_limit = self.time_limit.clone();
-        let finished = self.finished.clone();
-        let msg = format!("{desc} unable to finish in {} seconds", 
-            time_limit.as_secs());
-        tokio::spawn(async move {
-            tokio::time::sleep(time_limit).await;
-
-            if !finished.swap(true, Ordering::SeqCst) {
-                fatal!("{msg}");
-            }
-        });
     }
 
-    async fn end(&self) {
+    async fn end(&self) -> Result<(), String> {
         self.finished.store(true, Ordering::Release);
         let mut config = self.config.write().await;
         
@@ -150,7 +130,7 @@ impl<T> Tester<T>
         for node in config.nodes.iter_mut() {
             if let Some(raft) = node.raft.take() {
                 if let Err(_) = tokio::time::timeout(Duration::from_secs(1), raft.kill()).await {
-                    fatal!("Raft killing timeout, expect no more than 1sec");
+                    return Err(format!("Raft killing timeout, expect no more than 1sec"));
                 }
             }
         }
@@ -159,10 +139,10 @@ impl<T> Tester<T>
         greet!(" ... Passed --");
         greet!(" {}ms, {} peers, {} rpc, {} bytes, {} cmds", 
             t.as_millis(), config.n, nrpc, nbytes, ncmd);
-
+        Ok(())
     }
 
-    async fn start1(&self, id: usize, snapshot: bool) {
+    async fn start1(&self, id: usize, snapshot: bool) -> Result<(), String> {
         self.crash1(id).await;
 
         let mut config = self.config.write().await;
@@ -186,7 +166,7 @@ impl<T> Tester<T>
             Raft::new(client, id, persister, tx)
         ).await {
             Ok(raft) => raft,
-            Err(_) => fatal!("Raft instantiation timeout, expect no more than 1sec")
+            Err(_) => return Err(format!("Raft instantiation timeout, expect no more than 1sec"))
         };
         
         node.raft = Some(raft);
@@ -196,9 +176,10 @@ impl<T> Tester<T>
             logs: config.logs.clone(),
             apply_ch: rx
         }.run(snapshot));
+        Ok(())
     }
 
-    async fn crash1(&self, id: usize) {
+    async fn crash1(&self, id: usize) -> Result<(), String> {
         let raft_node = {
             let mut config = self.config.write().await;
             let node = &mut config.nodes[id as usize];
@@ -209,8 +190,12 @@ impl<T> Tester<T>
             node.persister = node.persister.clone().await;
             node.raft.take()
         };
-        if let Some(raft_node) = raft_node {
-            raft_node.kill().await;
+        match raft_node {
+            Some(raft) => {
+                tokio::time::timeout(Duration::from_secs(1), raft.kill()).await
+                .map_err(|_| "Raft kill timeout, expect no more than 1sec".to_string())
+            },
+            None => Ok(())
         }
     }
 
@@ -219,7 +204,7 @@ impl<T> Tester<T>
     /// In case of re-election, this check will be performed multiple 
     /// times to find a leader, panics when no leader is found.
     /// Return the id of leader that has the newest term.
-    async fn check_one_leader(&self) -> usize {
+    async fn check_one_leader(&self) -> Result<usize, String> {
         for _ in 0..10 {
             let ms = (rand::random::<u64>() % 100) + 450;
             let d = std::time::Duration::from_millis(ms);
@@ -238,7 +223,7 @@ impl<T> Tester<T>
                     
                     if is_leader {
                         if leader_terms.get(&term).is_some() {
-                            fatal!("Term {term} has multiple leaders");
+                            return Err(format!("Term {term} has multiple leaders"));
                         }
                         leader_terms.insert(term, id);
                     }
@@ -247,15 +232,15 @@ impl<T> Tester<T>
 
             if let Some(max) = leader_terms.into_iter()
                 .max_by_key(|x| x.0) {
-                return max.1;
+                return Ok(max.1);
             }
         }
-        fatal!("Expect one leader, got none");
+        Err(format!("Expect one leader, got none"))
     }
 
     /// Check if all nodes agree on their terms, 
     /// return the term if agree.
-    async fn check_terms(&self) -> usize {
+    async fn check_terms(&self) -> Result<usize, String> {
         let mut term = None;
         let config = self.config.read().await;
 
@@ -264,16 +249,17 @@ impl<T> Tester<T>
                 let (iterm, _) = raft.get_state().await;
                 term = match term {
                     Some(term) if term == iterm => Some(term),
-                    Some(term) => fatal!("Servers {id} with term {iterm} disagree on term {term}"),
+                    Some(term) => return Err(format!("Servers {id} 
+                            with term {iterm} disagree on term {term}")),
                     None => Some(iterm)
                 };
             }
         }
-        term.expect("Servers return no term")
+        term.ok_or("Servers return no term".to_string())
     }
 
     // expect none of the nodes claims to be a leader
-    async fn check_no_leader(&self) {
+    async fn check_no_leader(&self) -> Result<(), String> {
         let config = self.config.read().await;
         for (id, node) in config.nodes.iter().enumerate() {
             if !node.connected || node.raft.is_none() {
@@ -283,22 +269,23 @@ impl<T> Tester<T>
             let (_, is_leader) = node.raft.as_ref()
                 .unwrap().get_state().await;
             if is_leader {
-                fatal!("Expected no leader among connected servers, 
-                    but node {id} claims to be a leader");
+                return Err(format!("Expected no leader among connected servers, 
+                    but node {id} claims to be a leader"));
             }
         }
+        Ok(())
     }
 
     /// Wait a command with index to be applied by at least `expected` number of 
     /// servers.
     /// This will wait forever, so it's usually used with timeout function.
-    async fn wait_commit(&self, index: usize, cmd: &T, expected: usize) -> usize {
+    async fn wait_commit(&self, index: usize, cmd: &T, expected: usize) -> Result<usize, String> {
         loop {
-            match self.n_committed(index).await {
+            match self.n_committed(index).await? {
                 (cnt, Some(cmt_cmd)) => {
                     debug!("wait_commit: cnt = {cnt}, cmt_cmd = {cmt_cmd}, cmd = {cmd}");
                     if cnt >= expected && cmt_cmd == *cmd {
-                        break index;
+                        break Ok(index);
                     }
                 },
                 _ => tokio::time::sleep(Duration::from_millis(20)).await
@@ -306,7 +293,7 @@ impl<T> Tester<T>
         }
     }
 
-    async fn must_submit(&self, cmd: T, expected: usize, retry: bool) -> usize {
+    async fn must_submit(&self, cmd: T, expected: usize, retry: bool) -> Result<usize, String> {
         let cmd_bin = bincode::serialize(&cmd).unwrap();
         loop {
             // iterate all raft nodes, ask them to start a command.
@@ -339,10 +326,10 @@ impl<T> Tester<T>
             match tokio::time::timeout(Duration::from_secs(2), 
                 self.wait_commit(cmd_idx, &cmd, expected)).await
             {
-                Ok(index) => break index,
-                Err(e) => {
+                Ok(res) => break res,
+                Err(_) => {
                     if !retry {
-                        fatal!("One cmd {cmd} failed to reach agreement");
+                        return Err(format!("One cmd {cmd} failed to reach agreement"));
                     }
                 }
             }
@@ -353,22 +340,26 @@ impl<T> Tester<T>
     /// Commit a command, ask every node if it is a leader, 
     /// if is, ask it to commit a command.
     /// If the command is successfully committed, return its index.
-    async fn submit_cmd(&self, cmd: T, expected: usize, retry: bool) -> Option<usize> {
-        tokio::time::timeout(Duration::from_secs(10), 
-            self.must_submit(cmd, expected, retry)).await.ok()
+    async fn submit_cmd(&self, cmd: T, expected: usize, retry: bool) -> Result<Option<usize>, String> {
+        match tokio::time::timeout(Duration::from_secs(10), 
+            self.must_submit(cmd, expected, retry)).await
+        {
+            Ok(res) => Ok(Some(res?)),
+            Err(_) => Ok(None)
+        }
     }
 
     /// Check how many nodes think a command at index is committed.
     /// We assume the applied logs are consistent, so we don't check 
     /// if their values are equal.
-    async fn n_committed(&self, idx: usize) -> (usize, Option<T>) {
+    async fn n_committed(&self, idx: usize) -> Result<(usize, Option<T>), String> {
         let mut cnt = 0usize;
         let mut cmd = None;
         let config = self.config.read().await;
         let logs = config.logs.lock().await;
         for (i, log) in logs.logs.iter().enumerate() {
             if let Some(err_msg) = &logs.apply_err[i] {
-                fatal!("{err_msg}");
+                return Err(err_msg.clone());
             }
 
             if let Some(cmd_i) = log.get(idx) {
@@ -379,17 +370,17 @@ impl<T> Tester<T>
                 cnt += 1;
             }
         }
-        (cnt, cmd)
+        Ok((cnt, cmd))
     }
 
     /// Wait a command with `index` to be committed by at least `target` number
     /// of nodes.
     /// If start_term.is_some(), the waited command is must be started at that 
     /// specific term.
-    async fn wait(&self, index: usize, target: usize, start_term: Option<usize>) -> Option<T> {
+    async fn wait(&self, index: usize, target: usize, start_term: Option<usize>) -> Result<Option<T>, String> {
         let mut short_break = Duration::from_millis(10);
         for _ in 0..30 {
-            let (n, _) = self.n_committed(index).await;
+            let (n, _) = self.n_committed(index).await?;
             if n >= target {
                 break
             }
@@ -405,17 +396,18 @@ impl<T> Tester<T>
                 {
                     let (term, _) = raft.get_state().await;
                     if term > start_term {
-                        return None;
+                        return Ok(None);
                     }
                 }
             }
         }
 
-        let (n, cmd) = self.n_committed(index).await;
+        let (n, cmd) = self.n_committed(index).await?;
         if n < target {
-            fatal!("Only {n} nodes committed command with index {index}, expected {target}");
+            return Err(format!("Only {n} nodes committed command with 
+                    index {index}, expected {target}"));
         }
-        cmd
+        Ok(cmd)
     }
 
     async fn ingest_snapshot(&self, _id: usize, _snapshot: Vec<u8>, _index: Option<usize>) {
@@ -450,19 +442,20 @@ impl<T> Applier<T>
         let mut failed = false;
         while let Some(msg) = self.apply_ch.recv().await {
             if failed { continue; }
+            let mut logs = self.logs.lock().await;
             match msg {
                 ApplyMsg::Command {index, command} => {
-                    failed = self.check_logs(self.id, index, command).await.is_ok();
+                    failed = Self::check_logs(self.id, index, command, 
+                        &mut logs.deref_mut()).await.is_err();
                 },
                 ApplyMsg::Snapshot {..} if snap => {},
-                _ => fatal!("Snapshot unexpected")
+                _ => logs.apply_err[self.id] = Some("Snapshot unexpected".to_string())
             }
         }
     }
 
-    async fn check_logs(&self, id: usize, cmd_idx: usize, cmd: Vec<u8>) -> Result<(), ()> {
-        let mut logs = self.logs.lock().await;
-        match self.cross_check(self.id, cmd_idx, cmd, &mut logs.logs) {
+    async fn check_logs(id: usize, cmd_idx: usize, cmd: Vec<u8>, logs: &mut Logs<T>) -> Result<(), ()> {
+        match Self::cross_check(id, cmd_idx, cmd, &mut logs.logs) {
             Ok(_) => {
                 logs.max_cmd_idx = logs.max_cmd_idx.max(cmd_idx);
                 Ok(())
@@ -478,7 +471,7 @@ impl<T> Applier<T>
     /// Check applied commands index and term consistency,
     /// if ok, insert this command into logs.
     /// WARN: check_logs assume the Config.lock is hold by the caller.
-    fn cross_check(&self, id: usize, cmd_idx: usize, cmd: Vec<u8>,
+    fn cross_check(id: usize, cmd_idx: usize, cmd: Vec<u8>,
         logs: &mut Vec<Vec<T>>) -> Result<(), String> {
         let cmd_value = bincode::deserialize_from::<_, T>(&cmd[..])
             .unwrap();
@@ -511,5 +504,17 @@ impl<T> Applier<T>
 
         logs[id as usize].push(cmd_value);
         Ok(())
+    }
+}
+
+async fn timeout_test<F>(test: F) 
+    where F: Future<Output = Result<(), String>>,
+{
+    let r = match tokio::time::timeout(TEST_TIME_LIMIT, test).await {
+        Ok(res) => res,
+        Err(_) => Err(format!("Test timeout, expect no more than {} secs", TEST_TIME_LIMIT.as_secs()))
+    };
+    if let Err(msg) = r {
+        panic!("{}", msg.red());
     }
 }

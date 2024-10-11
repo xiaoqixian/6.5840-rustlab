@@ -7,7 +7,7 @@ edition = "2021"
 labrpc = { version = "0.1.0", path = "../labrpc" }
 async-trait = "0.1.81"
 bincode = "1.3.3"
-labrpc-macros = { version = "0.1.0", path = "../labrpc-macros" }
+macros = { version = "0.1.0", path = "../macros" }
 rand = "0.8.5"
 serde = { version = "1.0.208", features = ["default", "derive"] }
 tokio = { version = "1.40.0", features = ["full"] }
@@ -15,7 +15,7 @@ colored = "2.1.0"
 bit-vec = "0.8.0"
 
 [features]
-default = ["no_debug"]
+default = ["no_debug", "no_test_debug"]
 info_log_level = ["warn_log_level"]
 warn_log_level = ["error_log_level"]
 error_log_level = []
