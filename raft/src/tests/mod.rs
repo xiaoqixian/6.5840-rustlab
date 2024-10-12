@@ -5,8 +5,8 @@
 #[cfg(test)]
 mod test_3a;
 
-// #[cfg(test)]
-// mod test_3b;
+#[cfg(test)]
+mod test_3b;
 
 use std::{collections::HashMap, fmt::{Debug, Display}, future::Future, ops::DerefMut, sync::{atomic::{AtomicBool, Ordering}, Arc}, time::Duration};
 
@@ -81,7 +81,7 @@ where T: Eq + Clone + Serialize + DeserializeOwned + Display
 impl<T> Tester<T> 
     where T: WantedCmd
 {
-    pub async fn new(n: usize, reliable: bool, snapshot: bool) -> Self {
+    pub async fn new(n: usize, reliable: bool, snapshot: bool) -> Result<Self, String> {
         let config = Config {
             n,
             net: Network::new(n).reliable(reliable).long_delay(true),
@@ -107,10 +107,10 @@ impl<T> Tester<T>
         };
 
         for i in 0..n {
-            tester.start1(i, snapshot).await;
+            tester.start1(i, snapshot).await?;
         }
         
-        tester
+        Ok(tester)
     }
 
     async fn begin<D: std::fmt::Display>(&self, desc: D) {
@@ -143,7 +143,7 @@ impl<T> Tester<T>
     }
 
     async fn start1(&self, id: usize, snapshot: bool) -> Result<(), String> {
-        self.crash1(id).await;
+        self.crash1(id).await?;
 
         let mut config = self.config.write().await;
         let Config {
@@ -283,7 +283,6 @@ impl<T> Tester<T>
         loop {
             match self.n_committed(index).await? {
                 (cnt, Some(cmt_cmd)) => {
-                    debug!("wait_commit: cnt = {cnt}, cmt_cmd = {cmt_cmd}, cmd = {cmd}");
                     if cnt >= expected && cmt_cmd == *cmd {
                         break Ok(index);
                     }
@@ -293,7 +292,7 @@ impl<T> Tester<T>
         }
     }
 
-    async fn must_submit(&self, cmd: T, expected: usize, retry: bool) -> Result<usize, String> {
+    async fn must_submit(&self, cmd: &T, expected: usize, retry: bool) -> Result<usize, String> {
         let cmd_bin = bincode::serialize(&cmd).unwrap();
         loop {
             // iterate all raft nodes, ask them to start a command.
@@ -303,13 +302,13 @@ impl<T> Tester<T>
                 // for raft in self.config.read().await.nodes.iter()
                 //     .filter(|node| node.connected)
                 //     .filter_map(|node| node.raft.as_ref())
-                for (raft_i, raft) in self.config.read().await.nodes.iter().enumerate()
+                for (_raft_i, raft) in self.config.read().await.nodes.iter().enumerate()
                     .filter(|(_, node)| node.connected)
                     .filter_map(|(i, node)| node.raft.as_ref().map(|nd| (i, nd)))
                 {
                     if let Some((cmd_idx, _)) = raft.start(cmd_bin.clone()).await {
                         index = Some(cmd_idx);
-                        debug!("Command {cmd} submitted by raft {raft_i}, index = {cmd_idx}");
+                        debug!("Command {cmd} submitted by raft {_raft_i}, index = {cmd_idx}");
                         break;
                     }
                 }
@@ -333,19 +332,26 @@ impl<T> Tester<T>
                     }
                 }
             }
-            debug!("after wait_commit");
         }
     }
 
-    /// Commit a command, ask every node if it is a leader, 
+    /// Submit a command, ask every node if it is a leader, 
     /// if is, ask it to commit a command.
     /// If the command is successfully committed, return its index.
-    async fn submit_cmd(&self, cmd: T, expected: usize, retry: bool) -> Result<Option<usize>, String> {
+    async fn submit_cmd(&self, cmd: &T, expected: usize, retry: bool) -> Result<Option<usize>, String> {
         match tokio::time::timeout(Duration::from_secs(10), 
             self.must_submit(cmd, expected, retry)).await
         {
             Ok(res) => Ok(Some(res?)),
             Err(_) => Ok(None)
+        }
+    }
+
+    /// Submit a command, return Err if not success
+    async fn must_submit_cmd(&self, cmd: &T, expected: usize, retry: bool) -> Result<usize, String> {
+        match self.submit_cmd(cmd, expected, retry).await? {
+            Some(idx) => Ok(idx),
+            None => Err(format!("Submit command {cmd} failed"))
         }
     }
 
@@ -482,7 +488,7 @@ impl<T> Applier<T>
         // if less, the log is applied before, which is not allowed 
         // for a state machine.
         if cmd_idx > logs[id].len() {
-            return Err(format!("Server {id} apply out of order {cmd_idx}"));
+            return Err(format!("Server {id} apply out of order, expect {}, got {cmd_idx}", logs[id].len()));
         }
         else if cmd_idx < logs[id].len() {
             return Err(format!("Server {id} has applied the log {cmd_idx} before"));

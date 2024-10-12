@@ -134,7 +134,8 @@ impl std::fmt::Display for AppendEntriesType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::HeartBeat => write!(f, "HeartBeat"),
-            Self::Entries {..} => write!(f, "AppendEntries")
+            Self::Entries {prev, entries} => write!(f, 
+                "AppendEntries[{prev}, {} entries]", entries.len())
         }
     }
 }

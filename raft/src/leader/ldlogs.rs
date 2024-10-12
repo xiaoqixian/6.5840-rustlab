@@ -72,7 +72,7 @@ impl ReplLogs {
     }
 
     pub fn repl_get(&self, next_index: usize) -> Result<ReplQueryRes, ()> {
-        info!("{self}: repl_get, next_index = {next_index}");
+        info!("{self}: repl_get, next_index = {next_index}, my range = {:?}", self.logs_range());
         debug_assert!(next_index >= 1);
         let logs_guard = self.logs.read().unwrap();
         let logs = match logs_guard.as_ref() {

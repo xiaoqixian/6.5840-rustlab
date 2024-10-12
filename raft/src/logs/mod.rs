@@ -7,7 +7,7 @@ use std::ops::{RangeBounds, RangeInclusive};
 use applier::{Applier, ApplyEntry};
 use serde::{Deserialize, Serialize};
 
-use crate::{fatal, ApplyMsg, UbTx};
+use crate::{fatal, info, ApplyMsg, UbTx};
 
 mod applier;
 
@@ -119,7 +119,7 @@ impl Logs {
     }
 
     pub fn get_range<R>(&self, range: &R) -> Option<&[LogEntry]>
-        where R: RangeBounds<usize>
+        where R: RangeBounds<usize> + std::fmt::Debug
     {
         use std::ops::Bound;
         let start = match range.start_bound() {
@@ -127,11 +127,12 @@ impl Logs {
             Bound::Excluded(&start) => start - self.offset + 1,
             Bound::Unbounded => 0
         };
-        let end = match range.start_bound() {
+        let end = match range.end_bound() {
             Bound::Included(&end) => end - self.offset + 1,
             Bound::Excluded(&end) => end - self.offset,
             Bound::Unbounded => self.logs.len()
         };
+        info!("{self}: get_range, logs len = {}, query_range = {:?}, get range = {:?}", self.logs.len(), range, start..end);
         self.logs.get(start..end)
     }
 
@@ -148,13 +149,24 @@ impl Logs {
         if let None = self.logs.get(diff) {
             return Err(entries);
         }
-        self.logs.drain((diff+1)..);
+        if diff+1 < self.logs.len() {
+            info!("{self}: removed logs range {:?}", (prev.index+1)..);
+        }
 
-        self.cmd_cnt += entries.iter()
-            .fold(0, |acc, et| match &et.log_type {
+        fn count_cmd(acc: usize, et: &LogEntry) -> usize {
+            match &et.log_type {
                 LogType::Command {..} => acc + 1,
-                _ => acc
-            });
+                LogType::Noop => acc
+            }
+        }
+        // I know this is kind of dangerous, 
+        // but I don't want to use an extra block.
+        self.cmd_cnt -= self.logs.drain((diff+1)..)
+            .as_ref()
+            .iter()
+            .fold(0, count_cmd);
+
+        self.cmd_cnt += entries.iter().fold(0, count_cmd);
 
         self.logs.extend(entries);
         Ok(())
@@ -173,6 +185,7 @@ impl Logs {
                 index: cmd_idx
             }
         });
+        info!("{self}: push new command with index {cmd_idx} at log index {}", lli+1);
         (lli + 1, cmd_idx)
     }
 
@@ -183,6 +196,7 @@ impl Logs {
             term,
             log_type: LogType::Noop
         });
+        info!("{self}: push new noop at log index {}", lli+1);
         lli + 1
     }
 
@@ -203,6 +217,7 @@ impl Logs {
                 .collect()
         };
         
+        info!("{self}: apply logs range {apply_range:?}");
         self.apply_tx.send(ApplyEntry::Entries { entries })
             .expect("The apply channel is supposed to be open while 
                 the Logs is alive.");

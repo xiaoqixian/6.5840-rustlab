@@ -31,7 +31,7 @@ async fn test3a_initial_election() {
         const N: usize = 3;
         const RELIABLE: bool = false;
         const SNAPSHOT: bool = false;
-        let tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT).await;
+        let tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT).await?;
 
         tester.begin("Test (3A): initial election").await;
         // sleep a while to avoid racing with followers learning 
@@ -61,7 +61,7 @@ async fn test3a_reelection() {
         const N: usize = 3;
         const RELIABLE: bool = false;
         const SNAPSHOT: bool = false;
-        let tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT).await;
+        let tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT).await?;
 
         tester.begin("Test (3A): election after network failure").await;
 
@@ -98,7 +98,7 @@ async fn test3a_many_elections() {
         const N: usize = 7;
         const RELIABLE: bool = false;
         const SNAPSHOT: bool = false;
-        let tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT).await;
+        let tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT).await?;
 
         tester.begin("Test (3A): multiple elections").await;
 
