@@ -8,6 +8,9 @@ mod test_3a;
 #[cfg(test)]
 mod test_3b;
 
+#[cfg(test)]
+mod test_3c;
+
 use std::{collections::HashMap, fmt::{Debug, Display}, future::Future, ops::DerefMut, sync::{atomic::{AtomicBool, Ordering}, Arc}, time::Duration};
 
 use labrpc::network::Network;
@@ -143,15 +146,22 @@ impl<T> Tester<T>
     }
 
     async fn start1(&self, id: usize, snapshot: bool) -> Result<(), String> {
-        self.crash1(id).await?;
-
         let mut config = self.config.write().await;
         let Config {
             net,
             nodes,
             ..
         } = config.deref_mut();
-        let node = &mut nodes[id as usize];
+        let node = &mut nodes[id];
+
+        node.persister = node.persister.clone().await;
+        if let Some(raft) = node.raft.take() {
+            if let Err(_) = tokio::time::timeout(Duration::from_secs(1), 
+                raft.kill()).await
+            {
+                return Err("Raft kill timeout, expect no more than 1sec".to_string());
+            }
+        }
 
         if let Some(snapshot) = node.persister.snapshot().await {
             self.ingest_snapshot(id, snapshot, None).await;
@@ -177,26 +187,6 @@ impl<T> Tester<T>
             apply_ch: rx
         }.run(snapshot));
         Ok(())
-    }
-
-    async fn crash1(&self, id: usize) -> Result<(), String> {
-        let raft_node = {
-            let mut config = self.config.write().await;
-            let node = &mut config.nodes[id as usize];
-
-            // as this Persister is hold by the old raft node as well,
-            // we need to create a new one so the old one won't affect 
-            // this one.
-            node.persister = node.persister.clone().await;
-            node.raft.take()
-        };
-        match raft_node {
-            Some(raft) => {
-                tokio::time::timeout(Duration::from_secs(1), raft.kill()).await
-                .map_err(|_| "Raft kill timeout, expect no more than 1sec".to_string())
-            },
-            None => Ok(())
-        }
     }
 
     /// Check if only one leader exist for a specific term, 
@@ -381,8 +371,10 @@ impl<T> Tester<T>
 
     /// Wait a command with `index` to be committed by at least `target` number
     /// of nodes.
-    /// If start_term.is_some(), the waited command is must be started at that 
+    /// If start_term.is_some(), the waited command must be started at that 
     /// specific term.
+    /// Otherwise, as long as the command is committed by specific number of 
+    /// servers, the term does not matter.
     async fn wait(&self, index: usize, target: usize, start_term: Option<usize>) -> Result<Option<T>, String> {
         let mut short_break = Duration::from_millis(10);
         for _ in 0..30 {
@@ -422,7 +414,7 @@ impl<T> Tester<T>
 
     async fn enable(&self, id: usize, enable: bool) {
         let mut config = self.config.write().await;
-        config.nodes[id as usize].connected = enable;
+        config.nodes[id].connected = enable;
         config.net.connect(id, enable).await;
     }
 
@@ -508,7 +500,7 @@ impl<T> Applier<T>
             }
         }
 
-        logs[id as usize].push(cmd_value);
+        logs[id].push(cmd_value);
         Ok(())
     }
 }
