@@ -3,7 +3,9 @@
 // Author: https://github.com/xiaoqixian
 
 use crate::{
-    err::{Error, DISCONNECTED, TIMEOUT}, server::Server, Idx, Key, Msg, RpcReq, Service, UbTx
+    err::{Error, DISCONNECTED, TIMEOUT}, 
+    server::Server, Idx, Key, Msg, RpcReq, 
+    Service, UbTx
 };
 
 use serde::{Serialize, de::DeserializeOwned};
@@ -140,7 +142,9 @@ impl ClientEnd {
             },
             // the sender is dropped without sending, 
             // which means the message is dropped.
-            Err(_) => Err(TIMEOUT)
+            Err(_) => {
+                Err(TIMEOUT)
+            }
         }
     }
 }

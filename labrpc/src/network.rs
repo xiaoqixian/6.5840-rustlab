@@ -9,9 +9,7 @@ use std::sync::{
 use tokio::sync::{mpsc as tk_mpsc, RwLock};
 
 use crate::{
-    client::Client, 
-    err::{DISCONNECTED, PEER_NOT_FOUND, TIMEOUT}, 
-    server::Server, CallResult, Idx, Key, Msg, RpcReq, UbRx
+    client::Client, err::{DISCONNECTED, PEER_NOT_FOUND, TIMEOUT}, server::Server, CallResult, Idx, Key, Msg, RpcReq, UbRx
 };
 
 use super::UbTx;
@@ -50,6 +48,7 @@ impl Network {
         let core = NetworkCore {
             nodes: std::iter::repeat_with(Default::default)
                 .take(n).collect(),
+            reliable: AtomicBool::new(true),
             ..Default::default()
         };
         let core = Arc::new(core);
@@ -97,7 +96,7 @@ impl Network {
     pub async fn make_client(&mut self, idx: usize) -> Client {
         debug_assert!(!self.core.closed.load(Ordering::Relaxed),
             "make_client: the network is closed");
-        assert!(idx < self.n, "Invalid index {idx}, 
+        debug_assert!(idx < self.n, "Invalid index {idx}, 
             the network group size is {}", self.n);
 
         let key = self.key_src.fetch_add(1, Ordering::AcqRel);
@@ -159,16 +158,13 @@ impl NetworkCore {
         let from_info = match self.nodes.get(from) {
             None => None,
             Some(nd) => nd.read().await.as_ref()
-                .map(|nd| (nd.connected, nd.key))
+                .map(|nd| (nd.connected, nd.key == msg_key))
         };
 
         let result = match from_info {
-            None => Err(PEER_NOT_FOUND),
-            Some((from_conn, from_key)) => 
-                match (from_conn, from_key == msg_key) {
-                    (true, true) => self.dispatch(to, req).await,
-                    _ => Err(DISCONNECTED)
-                }
+            Some((true, true)) => self.dispatch(to, req).await,
+            Some(_) => Err(DISCONNECTED),
+            None => Err(PEER_NOT_FOUND)
         };
 
         let _ = reply_tx.send(result);

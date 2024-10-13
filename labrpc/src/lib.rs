@@ -42,12 +42,24 @@ pub(crate) struct Msg {
     pub reply_tx: OneTx<CallResult>
 }
 
+#[macro_export]
+macro_rules! debug {
+    ($($args: expr), *) => {
+        #[cfg(feature = "debug")]
+        {
+            println!($($args), *);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Instant;
 
     use macros::rpc;
-    use crate::{err::{self, CLASS_NOT_FOUND}, network::Network, CallResult, Service};
+    use crate::{
+        client::Client, err::{self, CLASS_NOT_FOUND, DISCONNECTED}, network::Network, CallResult, Service
+    };
 
     struct Hello;
     #[rpc(Service, CallResult, err)]
@@ -185,5 +197,45 @@ mod tests {
 
         println!("RCP count: {}, byte count: {}", network.rpc_cnt(), network.byte_cnt());
         println!("Expected package byte count: {}", pack_serde_len * 100);
+    }
+
+    // When make a new client at index, the old client should be 
+    // disconnected.
+    #[tokio::test]
+    async fn restart() {
+        const N: usize = 3;
+        let mut network = Network::new(N);
+        let mut clients = Vec::<Option<Client>>::new();
+        for i in 0..N {
+            let cli = network.make_client(i).await;
+            cli.add_service(
+                "Hello".to_string(),
+                Box::new(Hello)
+            ).await;
+            clients.push(Some(cli));
+        }
+
+        for peer in clients[0].as_ref().unwrap().peers() {
+            assert_eq!(
+                Ok("Hello, Lunar".to_string()),
+                peer.call::<_, String>("Hello.hello", &"Lunar").await
+            );
+        }
+
+        let old_c0 = clients[0].take().unwrap();
+        let new_c0 = network.make_client(0).await;
+        for peer in new_c0.peers() {
+            assert_eq!(
+                Ok("Hello, Lunar".to_string()),
+                peer.call::<_, String>("Hello.hello", &"Lunar").await
+            );
+        }
+        
+        for peer in old_c0.peers() {
+            assert_eq!(
+                Err(DISCONNECTED), 
+                peer.call::<_, String>("Hello.hello", &"Lunar").await
+            );
+        }
     }
 }

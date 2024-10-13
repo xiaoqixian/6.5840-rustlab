@@ -11,3 +11,6 @@ macros = { version = "0.1.0", path = "../macros" }
 rand = "0.8.5"
 serde = { version = "1.0.208", features = ["default", "derive"] }
 tokio = { version = "1.39.2", features = ["full"] }
+
+[features]
+debug = []
