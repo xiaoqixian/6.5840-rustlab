@@ -145,8 +145,7 @@ impl Raft {
     }
 
     /// Kill the server.
-    pub async fn kill(&self) {
-        info!("I'm killed");
+    pub async fn kill(self) {
         self.ev_q.just_put(Event::Kill)
             .expect("Kill ev should not be rejected");
     }
