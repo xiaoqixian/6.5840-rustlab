@@ -2,6 +2,8 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
+mod utils;
+
 #[cfg(test)]
 mod test_3a;
 
@@ -70,6 +72,7 @@ struct Applier<T> {
 }
 
 /// T: the command type
+#[derive(Clone)]
 struct Tester<T> {
     config: Arc<RwLock<Config<T>>>,
     finished: Arc<AtomicBool>
@@ -110,7 +113,7 @@ impl<T> Tester<T>
         };
 
         for i in 0..n {
-            tester.start1(i, snapshot).await?;
+            tester.start_one(i, snapshot, false).await?;
         }
         
         Ok(tester)
@@ -145,7 +148,23 @@ impl<T> Tester<T>
         Ok(())
     }
 
-    async fn start1(&self, id: usize, snapshot: bool) -> Result<(), String> {
+    async fn crash_node(&self, node: &mut Node) -> Result<(), String> {
+        if let Some(raft) = node.raft.take() {
+            node.persister = node.persister.clone().await;
+            if let Err(_) = tokio::time::timeout(Duration::from_secs(1), 
+                raft.kill()).await
+            {
+                return Err("Raft kill timeout, expect no more than 1sec".to_string());
+            }
+        }
+
+        Ok(())
+    }
+
+    /// If not restart, only the node with raft.is_none() will be started.
+    /// Otherwise, the node will be restarted no matter if there is an alive raft node.
+    /// Return a bool to indicate if really a node is restarted.
+    async fn start_one(&self, id: usize, snapshot: bool, restart: bool) -> Result<bool, String> {
         let mut config = self.config.write().await;
         let Config {
             net,
@@ -154,13 +173,11 @@ impl<T> Tester<T>
         } = config.deref_mut();
         let node = &mut nodes[id];
 
-        node.persister = node.persister.clone().await;
-        if let Some(raft) = node.raft.take() {
-            if let Err(_) = tokio::time::timeout(Duration::from_secs(1), 
-                raft.kill()).await
-            {
-                return Err("Raft kill timeout, expect no more than 1sec".to_string());
+        if node.raft.is_some() {
+            if !restart {
+                return Ok(false);
             }
+            self.crash_node(node).await?;
         }
 
         if let Some(snapshot) = node.persister.snapshot().await {
@@ -186,7 +203,26 @@ impl<T> Tester<T>
             logs: config.logs.clone(),
             apply_ch: rx
         }.run(snapshot));
+        Ok(true)
+    }
+
+    async fn crash_some(&self, ids: &[usize]) -> Result<(), String> {
+        let mut config = self.config.write().await;
+        let Config { net, nodes, .. } = &mut config.deref_mut();
+
+        for &id in ids {
+            let node = &mut nodes[id];
+            if node.connected {
+                node.connected = false;
+                net.connect(id, false).await;
+            }
+            self.crash_node(node).await?;
+        }
         Ok(())
+    }
+
+    async fn crash_one(&self, id: usize) -> Result<(), String> {
+        self.crash_some(&[id]).await
     }
 
     /// Check if only one leader exist for a specific term, 
@@ -226,6 +262,39 @@ impl<T> Tester<T>
             }
         }
         Err(format!("Expect one leader, got none"))
+    }
+
+    /// Iterate all nodes, ask each one to start a command, 
+    /// if success, return its id, the command index and term.
+    async fn let_one_start<F>(&self, f: F) -> Option<(usize, (usize, usize))> 
+        where F: Fn(usize) -> T
+    {
+        for (id, raft) in self.config.read().await
+            .nodes.iter().enumerate()
+            .filter_map(|(id, node)| node.raft.as_ref().map(|raft| (id, raft)))
+        {
+            let cmd = bincode::serialize(&f(id)).unwrap();
+            if let Some(cmd_info) = raft.start(cmd).await {
+                return Some((id, cmd_info));
+            }
+        }
+        None
+    }
+
+    /// Let a specific node start
+    async fn let_it_start<F>(&self, id: usize, f: F) -> Option<(usize, usize)> 
+        where F: FnOnce() -> T
+    {
+        match self.config.read().await
+            .nodes.get(id).unwrap()
+            .raft.as_ref()
+        {
+            Some(raft) => {
+                let cmd = bincode::serialize(&f()).unwrap();
+                raft.start(cmd).await
+            },
+            None => None
+        }
     }
 
     /// Check if all nodes agree on their terms, 
@@ -361,7 +430,13 @@ impl<T> Tester<T>
             if let Some(cmd_i) = log.get(idx) {
                 match &cmd {
                     None => cmd = Some(cmd_i.clone()),
-                    Some(cmd) => assert_eq!(cmd, cmd_i)
+                    Some(cmd) => {
+                        if cmd_i != cmd {
+                            return Err(format!(
+                                "Command {cmd_i} committed by {i} is inconsistent with others command {cmd}"
+                            ));
+                        }
+                    }
                 }
                 cnt += 1;
             }
@@ -369,17 +444,17 @@ impl<T> Tester<T>
         Ok((cnt, cmd))
     }
 
-    /// Wait a command with `index` to be committed by at least `target` number
+    /// Wait a command with `index` to be committed by at least `expect` number
     /// of nodes.
     /// If start_term.is_some(), the waited command must be started at that 
     /// specific term.
     /// Otherwise, as long as the command is committed by specific number of 
     /// servers, the term does not matter.
-    async fn wait(&self, index: usize, target: usize, start_term: Option<usize>) -> Result<Option<T>, String> {
+    async fn wait(&self, index: usize, expect: usize, start_term: Option<usize>) -> Result<Option<T>, String> {
         let mut short_break = Duration::from_millis(10);
         for _ in 0..30 {
             let (n, _) = self.n_committed(index).await?;
-            if n >= target {
+            if n >= expect {
                 break
             }
 
@@ -401,9 +476,9 @@ impl<T> Tester<T>
         }
 
         let (n, cmd) = self.n_committed(index).await?;
-        if n < target {
+        if n < expect {
             return Err(format!("Only {n} nodes committed command with 
-                    index {index}, expected {target}"));
+                    index {index}, expected {expect}"));
         }
         Ok(cmd)
     }
@@ -425,11 +500,23 @@ impl<T> Tester<T>
         self.enable(id, true).await;
     }
 
+    async fn connected(&self, id: usize) -> bool {
+        self.config.read().await.nodes[id].connected
+    }
+
     async fn byte_cnt(&self) -> u64 {
         self.config.read().await.net.byte_cnt()
     }
     async fn rpc_cnt(&self) -> u32 {
         self.config.read().await.net.rpc_cnt()
+    }
+
+    async fn reliable(&self, value: bool) {
+        self.config.read().await.net.set_reliable(value);
+    }
+
+    async fn long_reordering(&self, value: bool) {
+        self.config.read().await.net.set_long_reordering(value);
     }
 }
 
