@@ -47,7 +47,7 @@ impl Parse for AttrPaths {
             },
             _ => Ok(AttrPaths {
                 trait_path: create_path("labrpc::Service"),
-                res_path: create_path("labrpc::service::CallResult"),
+                res_path: create_path("labrpc::CallResult"),
                 err_path: create_path("labrpc::err"),
             })
         }

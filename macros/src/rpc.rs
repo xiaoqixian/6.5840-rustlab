@@ -1,15 +1,11 @@
-// Date:   Tue Aug 20 10:14:47 2024
+// Date:   Fri Oct 11 21:32:15 2024
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
 use std::fmt::Display;
-
-use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
-use syn::{parse_macro_input, spanned::Spanned, FnArg, Generics, ImplItem, ImplItemFn, ItemImpl, Receiver, Signature, Type, Visibility};
-
-mod attr;
+use syn::{spanned::Spanned, FnArg, Generics, ImplItem, ImplItemFn, ItemImpl, Receiver, Signature, Type, Visibility};
 
 fn err<T, M: Display>(span: Span, msg: M) -> Result<T, syn::Error> {
     Err(syn::Error::new(span, msg))
@@ -59,7 +55,7 @@ fn good_fn(f: &ImplItemFn) -> Result<Box<Type>, syn::Error> {
     }
 }
 
-fn rpc_impl(attr_paths: attr::AttrPaths, input: ItemImpl) -> Result<TokenStream2, syn::Error> {
+pub fn rpc_impl(attr_paths: crate::attr::AttrPaths, input: ItemImpl) -> Result<TokenStream2, syn::Error> {
     let ItemImpl {
         trait_,
         self_ty,
@@ -75,7 +71,7 @@ fn rpc_impl(attr_paths: attr::AttrPaths, input: ItemImpl) -> Result<TokenStream2
         where_clause
     } = generics;
 
-    let attr::AttrPaths {
+    let crate::attr::AttrPaths {
         trait_path,
         res_path,
         err_path
@@ -143,15 +139,4 @@ fn rpc_impl(attr_paths: attr::AttrPaths, input: ItemImpl) -> Result<TokenStream2
         #input
         #impl_
     })
-}
-
-#[proc_macro_attribute]
-pub fn rpc(attr: TokenStream, input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as ItemImpl);
-    let attr_paths = parse_macro_input!(attr as attr::AttrPaths);
-    let out = match rpc_impl(attr_paths, input) {
-        Ok(t) => t,
-        Err(e) => e.to_compile_error()
-    };
-    TokenStream::from(out)
 }
