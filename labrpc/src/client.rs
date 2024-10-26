@@ -3,150 +3,149 @@
 // Author: https://github.com/xiaoqixian
 
 use crate::{
-    err::{Error, NetworkError, PEER_NOT_FOUND}, 
-    msg::{Msg, RpcReq}, Rx, UbTx,
-    network::{Peers, ServiceContainer},
-    Service
+    err::{Error, DISCONNECTED, TIMEOUT}, 
+    server::Server, Idx, Key, Msg, RpcReq, 
+    Service, UbTx
 };
 
 use serde::{Serialize, de::DeserializeOwned};
 
-
-/// A ClientEnd is associated with a server id, 
-/// it can start a RPC request to the corresponding 
-/// RPC server.
+/// A ClientEnd represents an end-to-end channel 
+/// from a client to a server.
+///
+/// @from:   the client ID
+/// @to:     the server ID
+/// @net_tx: the message channel to the network center
 #[derive(Clone)]
-pub(crate) struct ClientEnd {
-    id: u32,
+pub struct ClientEnd {
+    key: Key,
+    from: Idx,
+    to: Idx,
     net_tx: UbTx<Msg>
 }
 
-/// A Client is a collection of ClientEnds, 
-/// so you can use it to unicast a request to a server, 
-/// or broadcast your requests to all servers.
 pub struct Client {
-    id: u32,
-    peers: Peers,
-    services: ServiceContainer
+    key: Key,
+    idx: Idx,
+    n: usize,
+    server: Server,
+    net_tx: UbTx<Msg>
+}
+
+pub struct PeersIter {
+    key: Key,
+    idx: Idx,
+    n: usize,
+    net_tx: UbTx<Msg>,
+    pos: usize,
+}
+
+impl Client {
+    pub(crate) fn new(key: Key, idx: Idx, n: usize, 
+        server: Server, 
+        net_tx: UbTx<Msg>) -> Self {
+        Self { key, idx, n, server, net_tx }
+    }
+
+    pub fn n(&self) -> usize {
+        self.n
+    }
+
+    pub async fn add_service(&self, name: String, service: Box<dyn Service>) {
+        self.server.add_service(name, service).await;
+    }
+
+    pub fn peers(&self) -> PeersIter {
+        PeersIter {
+            key: self.key,
+            idx: self.idx,
+            n: self.n,
+            net_tx: self.net_tx.clone(),
+            pos: 0
+        }
+    }
+}
+
+impl Iterator for PeersIter {
+    type Item = ClientEnd;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // skip self node.
+        if self.pos == self.idx {
+            self.pos += 1;
+        }
+
+        if self.pos < self.n {
+            let ret = ClientEnd {
+                key: self.key,
+                from: self.idx,
+                to: self.pos,
+                net_tx: self.net_tx.clone()
+            };
+            self.pos += 1;
+            Some(ret)
+        } else {
+            None
+        }
+    }
 }
 
 impl ClientEnd {
-    pub fn new(id: u32, net_tx: UbTx<Msg>) -> Self {
-        Self { id, net_tx }
-    }
-
-    fn gen_req<A>(meth: &str, arg: A) -> Result<RpcReq, Error> 
+    fn gen_req<A>(meth: &str, arg: &A) -> Result<RpcReq, Error> 
         where A: Serialize
     {
         let (cls, method) = {
             let mut splits = meth.split('.').into_iter();
-            let mut parse_str = || {
-                match splits.next() {
-                    None => Err(Error::NetworkError(
-                        NetworkError::MethError(
-                            format!("Invalid meth: {meth}")
-                        )
-                    )),
-                    Some(s) => Ok(String::from(s))
-                }
-            };
-
-            (parse_str()?, parse_str()?)
+            (
+                String::from(splits.next().expect(
+                    &format!("Invalid meth: {meth}")
+                )),
+                String::from(splits.next().expect(
+                    &format!("Invalid meth: {meth}")
+                )),
+            )
         };
-        let arg = bincode::serialize(&arg)?;
+        let arg = match bincode::serialize(arg) {
+            Ok(arg) => arg,
+            Err(e) => panic!("Unexpected bincode serialization error {e:?}")
+        };
 
         Ok(RpcReq { cls, method, arg })
     }
 
-    pub async fn call<A, R>(&self, meth: &str, arg: A) -> Result<R, Error> 
+    pub fn to(&self) -> Idx {
+        self.to
+    }
+
+    pub async fn call<A, R>(&self, meth: &str, arg: &A) -> Result<R, Error> 
         where A: Serialize, R: DeserializeOwned
     {
         let req = Self::gen_req(meth, arg)?;
         let (tx, rx) = tokio::sync::oneshot::channel();
         let msg = Msg {
-            end_id: self.id,
+            key: self.key,
+            from: self.from,
+            to: self.to,
             req,
             reply_tx: tx
         };
-        self.net_tx.send(msg).unwrap();
-        
-        let res_enc = rx.await??;
-        let res = bincode::deserialize_from(&res_enc[..]).unwrap();
-        Ok(res)
-    }
-}
-
-impl Client {
-    pub(crate) fn new(id: u32, peers: Peers, services: ServiceContainer) -> Self {
-        Self { id, peers, services }
-    }
-
-    #[inline]
-    pub fn id(&self) -> u32 {
-        self.id
-    }
-
-    #[inline]
-    pub async fn add_service(&mut self, name: String, service: Box<dyn Service>) {
-        self.services.write().await.insert(name, service);
-    }
-
-    pub async fn unicast<A, R>(&self, to: u32, meth: &str, arg: A) -> Result<R, Error> 
-        where A: Serialize, R: DeserializeOwned
-    {
-        match self.peers.read().await.get(&to) {
-            None => Err(PEER_NOT_FOUND),
-            Some(peer) => peer.call(meth, arg).await
+        // if the network is closed, the client end should 
+        // consider itself disconnected.
+        if let Err(_) = self.net_tx.send(msg) {
+            return Err(DISCONNECTED);
         }
-    }
 
-    pub async fn multicast<A, R>(&self, to: &[u32], meth: &str, arg: A) -> Result<Rx<Result<R, Error>>, Error> 
-        where A: Serialize + Clone + Send + Sync + 'static,
-            R: DeserializeOwned + Send + Sync + 'static
-    {
-        let (tx, rx) = tokio::sync::mpsc::channel(to.len());
-        let meth = String::from(meth);
-        let peers = self.peers.read().await;
-        
-        for id in to {
-            match peers.get(id) {
-                None => tx.send(Err(PEER_NOT_FOUND)).await.unwrap(),
-                Some(peer) => {
-                    let peer = peer.clone();
-                    let tx = tx.clone();
-                    let arg = arg.clone();
-                    let meth = meth.clone();
-                    tokio::spawn(async move {
-                        let res = peer.call(&meth, arg).await;
-                        tx.send(res).await.unwrap();
-                    });
-                }
+        match rx.await {
+            Ok(res) => {
+                let res: R = bincode::deserialize(&res?[..]).unwrap();
+                Ok(res)
+            },
+            // the sender is dropped without sending, 
+            // which means the message is dropped.
+            Err(_) => {
+                Err(TIMEOUT)
             }
         }
-        Ok(rx)
-    }
-
-    pub async fn broadcast<A, R>(&self, meth: &str, arg: A) -> Result<Rx<Result<R, Error>>, Error> 
-        where A: Serialize + Clone + Send + Sync + 'static,
-            R: DeserializeOwned + Send + Sync + 'static
-    {
-        let peers = self.peers.read().await;
-        let (tx, rx) = tokio::sync::mpsc::channel(peers.len());
-        let meth = String::from(meth);
-
-        for (id, peer) in peers.iter() {
-            // avoid sending msg to myself
-            if *id == self.id { continue; }
-
-            let peer = peer.clone();
-            let tx = tx.clone();
-            let arg = arg.clone();
-            let meth = meth.clone();
-            tokio::spawn(async move {
-                let res = peer.call(&meth, arg).await;
-                tx.send(res).await.unwrap();
-            });
-        }
-        Ok(rx)
     }
 }
+

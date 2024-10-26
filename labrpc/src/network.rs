@@ -2,100 +2,70 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use std::{collections::HashMap, sync::{atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering}, Arc}};
+use std::{sync::{
+    atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering}, 
+    Arc
+}, time::Duration};
 use tokio::sync::{mpsc as tk_mpsc, RwLock};
 
 use crate::{
-    err::TIMEOUT, 
-    msg::{Msg, RpcReq}, 
-    Service, CallResult, UbRx,
-    client::{Client, ClientEnd},
-    server::Server
+    client::Client, err::{DISCONNECTED, PEER_NOT_FOUND, TIMEOUT}, server::Server, CallResult, Idx, Key, Msg, RpcReq, UbRx
 };
 
 use super::UbTx;
 
-pub(crate) type Peers = Arc<RwLock<HashMap<u32, ClientEnd>>>;
-pub(crate) type ServiceContainer = Arc<RwLock<HashMap<String, Box<dyn Service>>>>;
+// const DISPATCH_WAITING: Duration = Duration::from_secs(20);
 
-type ServerTable = Arc<RwLock<HashMap<u32, ServerNode>>>;
-
+// The client and server id at index.
 #[derive(Clone)]
-struct NetworkConfig {
-    reliable: Arc<AtomicBool>,
-    long_delay: Arc<AtomicBool>
-}
-
-#[derive(Clone)]
-pub struct Network {
-    tx: UbTx<Msg>,
-    config: NetworkConfig,
-    nodes: ServerTable,
-    peers: Peers,
-    rpc_cnt: Arc<AtomicU32>,
-    byte_cnt: Arc<AtomicU64>
-}
-
-#[derive(Clone)]
-struct NetworkDaemon {
-    nodes: ServerTable,
-    config: NetworkConfig,
-    rpc_cnt: Arc<AtomicU32>,
-    byte_cnt: Arc<AtomicU64>
-}
-
-struct ServerNode {
+struct Node {
+    key: Key,
+    connected: bool,
     server: Server,
-    connected: Arc<AtomicBool>
 }
 
-impl ServerNode {
-    #[inline]
-    fn connected(&self) -> bool {
-        self.connected.load(Ordering::Acquire)
-    }
+#[derive(Default)]
+struct NetworkCore {
+    nodes: Vec<RwLock<Option<Node>>>,
+    rpc_cnt: AtomicU32,
+    byte_cnt: AtomicU64,
+    reliable: AtomicBool,
+    long_delay: AtomicBool,
+    long_reordering: AtomicBool,
+    closed: AtomicBool
 }
 
-impl NetworkConfig {
-    #[inline]
-    fn reliable(&self) -> bool {
-        self.reliable.load(Ordering::Acquire)
-    }
-
-    #[inline]
-    fn long_delay(&self) -> bool {
-        self.long_delay.load(Ordering::Acquire)
-    }
+pub struct Network {
+    n: usize,
+    tx: UbTx<Msg>,
+    core: Arc<NetworkCore>,
+    key_src: AtomicUsize,
 }
 
 impl Network {
-    pub fn new() -> Self {
-        let config = NetworkConfig {
-            reliable: Arc::new(AtomicBool::new(true)),
-            long_delay: Default::default()
-        };
-
+    pub fn new(n: usize) -> Self {
         let (tx, rx) = tk_mpsc::unbounded_channel();
 
-        let nodes = ServerTable::default();
-        let rpc_cnt: Arc<AtomicU32> = Default::default();
-        let byte_cnt: Arc<AtomicU64> = Default::default();
+        let core = NetworkCore {
+            nodes: std::iter::repeat_with(Default::default)
+                .take(n).collect(),
+            reliable: AtomicBool::new(true),
+            ..Default::default()
+        };
+        let core = Arc::new(core);
 
-        tokio::spawn(NetworkDaemon {
-            nodes: nodes.clone(),
-            config: config.clone(),
-            rpc_cnt: rpc_cnt.clone(),
-            byte_cnt: byte_cnt.clone()
-        }.run(rx));
+        tokio::spawn(core.clone().run(rx));
 
         Self {
+            n,
             tx,
-            config,
-            nodes,
-            peers: Default::default(),
-            rpc_cnt,
-            byte_cnt
+            core,
+            key_src: AtomicUsize::default(),
         }
+    }
+
+    pub fn close(&self) {
+        self.core.closed.store(true, Ordering::Relaxed);
     }
 
     #[inline]
@@ -106,12 +76,12 @@ impl Network {
 
     #[inline]
     pub fn set_reliable(&self, val: bool) {
-        self.config.reliable.store(val, Ordering::Release);
+        self.core.reliable.store(val, Ordering::Relaxed);
     }
 
     #[inline]
     pub fn set_long_delay(&self, val: bool) {
-        self.config.long_delay.store(val, Ordering::Release);
+        self.core.long_delay.store(val, Ordering::Relaxed);
     }
 
     #[inline]
@@ -120,121 +90,242 @@ impl Network {
         self
     }
 
-    pub async fn join_one(&mut self) -> Client {
-        let services = ServiceContainer::default();
+    #[inline]
+    pub fn set_long_reordering(&self, val: bool) {
+        self.core.long_reordering.store(val, Ordering::Relaxed);
+    }
 
-        let mut nodes = self.nodes.write().await;
-        let id = nodes.len() as u32;
-        nodes.insert(id, ServerNode {
-            server: Server::new(services.clone()),
-            connected: Arc::new(AtomicBool::new(true))
+    #[inline]
+    pub fn long_reordering(self, val: bool) -> Self {
+        self.set_long_reordering(val);
+        self
+    }
+
+    /// By making a client, the new client will replace the original 
+    /// one at `idx`, which expires the key and removes the original
+    /// server out of the network.
+    /// So this can be used to simulate a restart of a node.
+    pub async fn make_client(&mut self, idx: usize) -> Client {
+        debug_assert!(!self.core.closed.load(Ordering::Relaxed),
+            "make_client: the network is closed");
+        debug_assert!(idx < self.n, "Invalid index {idx}, 
+            the network group size is {}", self.n);
+
+        let key = self.key_src.fetch_add(1, Ordering::AcqRel);
+        let server = Server::default();
+        *self.core.nodes[idx].write().await = Some(Node {
+            key,
+            server: server.clone(),
+            connected: true
         });
         
-        let mut peers = self.peers.write().await;
-        peers.insert(id, ClientEnd::new(id, self.tx.clone()));
-        
-        Client::new(id, self.peers.clone(), services)
-    }
-    
-    /// Delete a server from the cluster
-    pub async fn delete_server(&mut self, id: u32) {
-        {
-            let mut peers = self.peers.write().await;
-            if let None = peers.remove(&id) {
-                panic!("Server {id} does not exist in the network");
-            }
-        }
-
-        let mut servers = self.nodes.write().await;
-        let ret = servers.remove(&id);
-        assert!(ret.is_some());
-    }
-
-    pub async fn enable(&mut self, id: u32, enable: bool) {
-        let servers = self.nodes.write().await;
-        if let Some(server) = servers.get(&id) {
-            server.connected.store(enable, Ordering::Release);
-        }
-    }
-
-    /// Isolate a server, disconnect it from all other nodes.
-    /// But the server is still running, so it can be reconnected.
-    #[inline]
-    pub async fn disconnect(&mut self, id: u32) {
-        self.enable(id, false).await;
-    }
-
-    #[inline]
-    pub async fn connect(&mut self, id: u32) {
-        self.enable(id, true).await;
+        Client::new(key, idx, self.n, server, self.tx.clone())
     }
 
     #[inline]
     pub fn rpc_cnt(&self) -> u32 {
-        self.rpc_cnt.load(Ordering::Acquire)
+        self.core.rpc_cnt.load(Ordering::Relaxed)
     }
 
     #[inline]
     pub fn byte_cnt(&self) -> u64 {
-        self.byte_cnt.load(Ordering::Acquire)
+        self.core.byte_cnt.load(Ordering::Relaxed)
+    }
+
+    pub async fn connect(&self, idx: usize, conn: bool) {
+        assert!(idx < self.n, "Invalid index {idx}, 
+            the network group size is {}", self.n);
+        let mut node = self.core.nodes[idx].write().await;
+        if let Some(node) = node.as_mut() {
+            node.connected = conn;
+        }
     }
 }
 
-impl NetworkDaemon {
-    async fn run(self, mut rx: UbRx<Msg>) {
+impl NetworkCore {
+    async fn run(self: Arc<Self>, mut rx: UbRx<Msg>) {
         while let Some(msg) = rx.recv().await {
-            self.rpc_cnt.fetch_add(1, Ordering::AcqRel);
+            self.rpc_cnt.fetch_add(1, Ordering::Relaxed);
             let bytes = msg.req.arg.len() as u64;
-            self.byte_cnt.fetch_add(bytes, Ordering::AcqRel);
+            self.byte_cnt.fetch_add(bytes, Ordering::Relaxed);
 
             tokio::spawn(self.clone().process_msg(msg));
+
+            if self.closed.load(Ordering::Relaxed) {
+                rx.close();
+                break;
+            }
         }
     }
 
-    async fn process_msg(self, msg: Msg) {
+    async fn process_msg(self: Arc<Self>, msg: Msg) {
         let Msg {
-            end_id,
+            key: msg_key,
+            from,
+            to,
             req,
             reply_tx
         } = msg;
-        let result = self.dispatch(end_id, req).await;
-        reply_tx.send(result).unwrap()
-    }
-
-    async fn dispatch(&self, end_id: u32, req: RpcReq) -> CallResult {
-        let nodes = self.nodes.read().await;
-
-        let node = match nodes.get(&end_id) {
-            Some(node) if node.connected() => Some(node),
-            _ => None
+        
+        let from_info = match self.nodes.get(from) {
+            None => None,
+            Some(nd) => nd.read().await.as_ref()
+                .map(|nd| (nd.connected, nd.key == msg_key))
         };
 
-        if let Some(node) = node {
-            let reliable = self.config.reliable();
-            if !reliable {
+        let result = match from_info {
+            Some((true, true)) => self.clone().dispatch(to, req).await,
+            Some(_) => Err(DISCONNECTED),
+            None => Err(PEER_NOT_FOUND)
+        };
+
+        if let Ok(r) = &result {
+            self.byte_cnt.fetch_add(r.len() as u64, Ordering::Relaxed);
+        }
+
+        let _ = reply_tx.send(result);
+    }
+
+    async fn dispatch(self: Arc<Self>, to: Idx, req: RpcReq) -> CallResult {
+        let node = match self.nodes.get(to) {
+            None => None,
+            Some(nd) => nd.read().await.clone()
+        };
+        use rand::Rng;
+
+        match node {
+            Some(node) if node.connected => {
+                let reliable = self.reliable.load(Ordering::Relaxed);
+
                 // give a random short delay.
-                let ms = rand::random::<u64>() % 27;
+                if !reliable {
+                    let ms = rand::random::<u64>() % 27;
+                    let d = Duration::from_millis(ms);
+                    tokio::time::sleep(d).await;
+                }
+
+                // randomly discard messages in unreliable network env.
+                let discard = !reliable && rand::thread_rng().gen_bool(0.1);
+                let reorder = self.long_reordering.load(Ordering::Relaxed) &&
+                    rand::thread_rng().gen_bool(2f64 / 3f64);
+
+                if discard {
+                    Err(TIMEOUT)
+                } else {
+                    if reorder {
+                        let ms = 200u64 + rand::thread_rng().gen_range(1..=2000);
+                        tokio::time::sleep(Duration::from_millis(ms)).await;
+                    }
+                    node.server.dispatch(req).await
+                }
+            },
+            _ => {
+                // simulate no reply and eventual timeout
+                let ms = rand::random::<u64>();
+                let long_delay = self.long_delay.load(Ordering::Relaxed);
+                let ms = if long_delay {
+                    ms % 7000
+                } else {
+                    ms % 100
+                };
+
                 let d = std::time::Duration::from_millis(ms);
                 tokio::time::sleep(d).await;
-            }
-
-            if !reliable && rand::random::<u32>() % 1000 < 100 {
                 Err(TIMEOUT)
-            } else {
-                node.server.dispatch(req).await
             }
-        } else {
-            // simulate no reply and eventual timeout
-            let ms = rand::random::<u64>();
-            let ms = if self.config.long_delay() {
-                ms % 7000
-            } else {
-                ms % 100
-            };
-
-            let d = std::time::Duration::from_millis(ms);
-            tokio::time::sleep(d).await;
-            Err(TIMEOUT)
         }
     }
 }
+
+/*func (rn *Network) processReq(req reqMsg) {
+	enabled, servername, server, reliable, longreordering := rn.readEndnameInfo(req.endname)
+
+	if enabled && servername != nil && server != nil {
+		if reliable == false {
+			// short delay
+			ms := (rand.Int() % 27)
+			time.Sleep(time.Duration(ms) * time.Millisecond)
+		}
+
+		if reliable == false && (rand.Int()%1000) < 100 {
+			// drop the request, return as if timeout
+			req.replyCh <- replyMsg{false, nil}
+			return
+		}
+
+		// execute the request (call the RPC handler).
+		// in a separate thread so that we can periodically check
+		// if the server has been killed and the RPC should get a
+		// failure reply.
+		ech := make(chan replyMsg)
+		go func() {
+			r := server.dispatch(req)
+			ech <- r
+		}()
+
+		// wait for handler to return,
+		// but stop waiting if DeleteServer() has been called,
+		// and return an error.
+		var reply replyMsg
+		replyOK := false
+		serverDead := false
+		for replyOK == false && serverDead == false {
+			select {
+			case reply = <-ech:
+				replyOK = true
+			case <-time.After(100 * time.Millisecond):
+				serverDead = rn.isServerDead(req.endname, servername, server)
+				if serverDead {
+					go func() {
+						<-ech // drain channel to let the goroutine created earlier terminate
+					}()
+				}
+			}
+		}
+
+		// do not reply if DeleteServer() has been called, i.e.
+		// the server has been killed. this is needed to avoid
+		// situation in which a client gets a positive reply
+		// to an Append, but the server persisted the update
+		// into the old Persister. config.go is careful to call
+		// DeleteServer() before superseding the Persister.
+		serverDead = rn.isServerDead(req.endname, servername, server)
+
+		if replyOK == false || serverDead == true {
+			// server was killed while we were waiting; return error.
+			req.replyCh <- replyMsg{false, nil}
+		} else if reliable == false && (rand.Int()%1000) < 100 {
+			// drop the reply, return as if timeout
+			req.replyCh <- replyMsg{false, nil}
+		} else if longreordering == true && rand.Intn(900) < 600 {
+			// delay the response for a while
+			ms := 200 + rand.Intn(1+rand.Intn(2000))
+			// Russ points out that this timer arrangement will decrease
+			// the number of goroutines, so that the race
+			// detector is less likely to get upset.
+			time.AfterFunc(time.Duration(ms)*time.Millisecond, func() {
+				atomic.AddInt64(&rn.bytes, int64(len(reply.reply)))
+				req.replyCh <- reply
+			})
+		} else {
+			atomic.AddInt64(&rn.bytes, int64(len(reply.reply)))
+			req.replyCh <- reply
+		}
+	} else {
+		// simulate no reply and eventual timeout.
+		ms := 0
+		if rn.longDelays {
+			// let Raft tests check that leader doesn't send
+			// RPCs synchronously.
+			ms = (rand.Int() % 7000)
+		} else {
+			// many kv tests require the client to try each
+			// server in fairly rapid succession.
+			ms = (rand.Int() % 100)
+		}
+		time.AfterFunc(time.Duration(ms)*time.Millisecond, func() {
+			req.replyCh <- replyMsg{false, nil}
+		})
+	}
+
+}*/
