@@ -2,21 +2,16 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use labrpc::client::Client;
-
 use crate::{
-    Tx,
-    msg::ApplyMsg,
-    persist::Persister
+    persist::Persister,
+    UbTx,
+    ApplyMsg
 };
 
+use labrpc::client::Client;
+
 // The Raft object to implement a single raft node.
-pub struct Raft {
-    me: u32,
-    rpc_client: Client,
-    persister: Persister,
-    apply_ch: Tx<ApplyMsg>,
-}
+pub struct Raft {}
 
 /// Raft implementation.
 /// Most API are marked as async functions, and they will called
@@ -41,14 +36,13 @@ impl Raft {
     ///
     /// `apply_ch` is a channel on which the tester or service expects Raft 
     /// to send ApplyMsg message.
-    pub fn new(rpc_client: Client, me: u32, persister: Persister, 
-        apply_ch: Tx<ApplyMsg>) -> Self {
-        Self {
-            me,
-            rpc_client,
-            persister,
-            apply_ch
-        }
+    pub async fn new(
+        _rpc_client: Client, 
+        _me: usize, 
+        _persister: Persister, 
+        _apply_ch: UbTx<ApplyMsg>
+    ) -> Self {
+        Self {}
     }
 
     /// Get the state of this server, 
@@ -69,7 +63,7 @@ impl Raft {
     }
 
     /// Read data from a byte buffer to restore Raft server state.
-    pub async fn read_persist(&mut self, bytes: &[u8]) {
+    pub async fn read_persist(&mut self, _bytes: &[u8]) {
         // read Data from bytes
         // Example:
         // let data: Data = bincode::deserilize_from(&bytes).unwrap();
@@ -82,7 +76,7 @@ impl Raft {
     /// all info up to and including index. this means the
     /// service no longer needs the log through (and including)
     /// that index. Raft should now trim its log as much as possible.
-    pub async fn snapshot(&self, index: usize, snapshot: Vec<u8>) {
+    pub async fn snapshot(&self, _index: usize, _snapshot: Vec<u8>) {
 
     }
 
@@ -91,10 +85,10 @@ impl Raft {
     /// Some((A, B)), where A is the index that the command will appear
     /// at if it's ever committed, B is the current term.
     /// If it does not, it should just return None.
-    pub async fn start(command: Vec<u8>) -> Option<(usize, usize)> {
+    pub async fn start(&self, _command: Vec<u8>) -> Option<(usize, usize)> {
         None
     }
 
     /// Kill the server.
-    pub async fn kill(&self) {}
+    pub async fn kill(self) {}
 }
