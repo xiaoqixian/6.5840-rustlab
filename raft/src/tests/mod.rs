@@ -17,8 +17,8 @@ use std::{collections::HashMap, fmt::{Debug, Display}, future::Future, ops::Dere
 
 use labrpc::network::Network;
 use serde::{de::DeserializeOwned, Serialize};
-use tokio::sync::{Mutex, RwLock};
-use crate::{ApplyMsg, persist::Persister, raft::Raft, UbRx};
+use tokio::{sync::{Mutex, RwLock}, task::JoinHandle};
+use crate::{ApplyMsg, persist::PersisterManager, raft::Raft, UbRx};
 use colored::Colorize;
 
 macro_rules! greet {
@@ -43,11 +43,18 @@ macro_rules! debug {
 const ELECTION_TIMEOUT: Duration = Duration::from_secs(1);
 const TEST_TIME_LIMIT: Duration = Duration::from_secs(120);
 
+struct NodeCore {
+    applier_handle: JoinHandle<()>,
+    applier_killed: Arc<AtomicBool>,
+    raft: Raft
+}
+
 struct Node {
-    // last_applied: usize,
-    persister: Persister,
-    raft: Option<Raft>,
-    connected: bool
+    id: usize,
+    persister: PersisterManager,
+    core: Option<NodeCore>,
+    connected: bool,
+    last_applied: Option<usize>
 }
 
 struct Config<T> {
@@ -68,7 +75,8 @@ struct Logs<T> {
 struct Applier<T> {
     id: usize,
     logs: Arc<Mutex<Logs<T>>>,
-    apply_ch: UbRx<ApplyMsg>
+    apply_ch: UbRx<ApplyMsg>,
+    killed: Arc<AtomicBool>
 }
 
 /// T: the command type
@@ -84,6 +92,30 @@ impl<T> WantedCmd for T
 where T: Eq + Clone + Serialize + DeserializeOwned + Display 
     + Debug + Send + 'static {}
 
+impl<T> Config<T>
+    where T: WantedCmd
+{
+    async fn crash_node(&mut self, id: usize) -> Result<(), String> {
+        let node = &mut self.nodes[id];
+        if let Some(core) = node.core.take() {
+            node.persister.lock();
+            core.applier_killed.store(true, Ordering::Relaxed);
+            if let Err(_) = tokio::time::timeout(Duration::from_secs(1), 
+                core.applier_handle).await 
+            {
+                return Err("Applier long time no return".to_string());
+            }
+
+            if let Err(_) = tokio::time::timeout(Duration::from_secs(1), 
+                core.raft.kill()).await
+            {
+                return Err("Raft kill timeout, expect no more than 1sec".to_string());
+            }
+        }
+        Ok(())
+    }
+}
+
 impl<T> Tester<T> 
     where T: WantedCmd
 {
@@ -96,14 +128,15 @@ impl<T> Tester<T>
                 apply_err: vec![None; n],
                 max_cmd_idx: 0
             })),
-            nodes: std::iter::repeat_with(
-                || Node {
-                    // last_applied: 0,
-                    persister: Persister::default(),
-                    raft: None,
-                    connected: true
-                }
-            ).take(n).collect(),
+            nodes: (0..n).into_iter()
+                .map(|id| Node {
+                    id,
+                    persister: PersisterManager::new(),
+                    core: None,
+                    connected: true,
+                    last_applied: None
+                })
+                .collect(),
             start: std::time::Instant::now()
         };
         
@@ -134,30 +167,13 @@ impl<T> Tester<T>
         let ncmd = config.logs.lock().await.max_cmd_idx;
         
         for node in config.nodes.iter_mut() {
-            if let Some(raft) = node.raft.take() {
-                if let Err(_) = tokio::time::timeout(Duration::from_secs(1), raft.kill()).await {
-                    return Err(format!("Raft killing timeout, expect no more than 1sec"));
-                }
-            }
+            self.crash_node(node).await?;
         }
         config.net.close();
 
         greet!(" ... Passed --");
         greet!(" {}ms, {} peers, {} rpc, {} bytes, {} cmds", 
             t.as_millis(), config.n, nrpc, nbytes, ncmd);
-        Ok(())
-    }
-
-    async fn crash_node(&self, node: &mut Node) -> Result<(), String> {
-        if let Some(raft) = node.raft.take() {
-            node.persister = node.persister.clone().await;
-            if let Err(_) = tokio::time::timeout(Duration::from_secs(1), 
-                raft.kill()).await
-            {
-                return Err("Raft kill timeout, expect no more than 1sec".to_string());
-            }
-        }
-
         Ok(())
     }
 
@@ -169,23 +185,24 @@ impl<T> Tester<T>
         let Config {
             net,
             nodes,
+            logs,
             ..
         } = config.deref_mut();
         let node = &mut nodes[id];
 
-        if node.raft.is_some() {
+        if node.core.is_some() {
             if !restart {
                 return Ok(false);
             }
             self.crash_node(node).await?;
         }
 
-        if let Some(snapshot) = node.persister.snapshot().await {
+        if let Some(snapshot) = node.persister.snapshot() {
             self.ingest_snapshot(id, snapshot, None).await;
         }
 
         let client = net.make_client(id).await;
-        let persister = node.persister.clone().await;
+        let persister = node.persister.make_new();
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let raft = match tokio::time::timeout(
@@ -195,14 +212,21 @@ impl<T> Tester<T>
             Ok(raft) => raft,
             Err(_) => return Err(format!("Raft instantiation timeout, expect no more than 1sec"))
         };
-        
-        node.raft = Some(raft);
-        
-        tokio::spawn(Applier {
+
+        let applier_killed = Arc::<AtomicBool>::default();
+        let applier_handle = tokio::task::spawn(Applier {
             id,
-            logs: config.logs.clone(),
-            apply_ch: rx
+            logs: logs.clone(),
+            apply_ch: rx,
+            killed: applier_killed.clone()
         }.run(snapshot));
+        
+        node.core = Some(NodeCore {
+            raft,
+            applier_handle,
+            applier_killed
+        });
+        
         Ok(true)
     }
 
@@ -242,8 +266,8 @@ impl<T> Tester<T>
                 let config = self.config.read().await;
                 
                 for (id, node) in config.nodes.iter().enumerate() {
-                    let (term, is_leader) = match &node.raft {
-                        Some(raft) => raft.get_state().await,
+                    let (term, is_leader) = match &node.core {
+                        Some(core) => core.raft.get_state().await,
                         None => continue
                     };
                     
@@ -271,7 +295,8 @@ impl<T> Tester<T>
     {
         for (id, raft) in self.config.read().await
             .nodes.iter().enumerate()
-            .filter_map(|(id, node)| node.raft.as_ref().map(|raft| (id, raft)))
+            .filter_map(|(id, node)| 
+                node.core.as_ref().map(|core| (id, &core.raft)))
         {
             let cmd = bincode::serialize(&f(id)).unwrap();
             if let Some(cmd_info) = raft.start(cmd).await {
@@ -287,11 +312,11 @@ impl<T> Tester<T>
     {
         match self.config.read().await
             .nodes.get(id).unwrap()
-            .raft.as_ref()
+            .core.as_ref()
         {
-            Some(raft) => {
+            Some(core) => {
                 let cmd = bincode::serialize(&f()).unwrap();
-                raft.start(cmd).await
+                core.raft.start(cmd).await
             },
             None => None
         }
@@ -304,8 +329,8 @@ impl<T> Tester<T>
         let config = self.config.read().await;
 
         for (id, node) in config.nodes.iter().enumerate() {
-            if let Some(raft) = &node.raft {
-                let (iterm, _) = raft.get_state().await;
+            if let Some(core) = &node.core {
+                let (iterm, _) = core.raft.get_state().await;
                 term = match term {
                     Some(term) if term == iterm => Some(term),
                     Some(term) => return Err(format!("Servers {id} 
@@ -321,12 +346,12 @@ impl<T> Tester<T>
     async fn check_no_leader(&self) -> Result<(), String> {
         let config = self.config.read().await;
         for (id, node) in config.nodes.iter().enumerate() {
-            if !node.connected || node.raft.is_none() {
+            if !node.connected || node.core.is_none() {
                 continue;
             }
 
-            let (_, is_leader) = node.raft.as_ref()
-                .unwrap().get_state().await;
+            let (_, is_leader) = node.core.as_ref()
+                .unwrap().raft.get_state().await;
             if is_leader {
                 return Err(format!("Expected no leader among connected servers, 
                     but node {id} claims to be a leader"));
@@ -363,7 +388,8 @@ impl<T> Tester<T>
                 //     .filter_map(|node| node.raft.as_ref())
                 for (_raft_i, raft) in self.config.read().await.nodes.iter().enumerate()
                     .filter(|(_, node)| node.connected)
-                    .filter_map(|(i, node)| node.raft.as_ref().map(|nd| (i, nd)))
+                    .filter_map(|(i, node)| 
+                        node.core.as_ref().map(|core| (i, &core.raft)))
                 {
                     if let Some((cmd_idx, _)) = raft.start(cmd_bin.clone()).await {
                         index = Some(cmd_idx);
@@ -464,10 +490,10 @@ impl<T> Tester<T>
             }
 
             if let Some(start_term) = start_term {
-                for raft in self.config.read().await.nodes.iter()
-                    .filter_map(|node| node.raft.as_ref())
+                for core in self.config.read().await.nodes.iter()
+                    .filter_map(|node| node.core.as_ref())
                 {
-                    let (term, _) = raft.get_state().await;
+                    let (term, _) = core.raft.get_state().await;
                     if term > start_term {
                         return Ok(None);
                     }
@@ -524,17 +550,27 @@ impl<T> Applier<T>
     where T: WantedCmd
 {
     async fn run(mut self, snap: bool) {
-        let mut failed = false;
         while let Some(msg) = self.apply_ch.recv().await {
-            if failed { continue; }
             let mut logs = self.logs.lock().await;
-            match msg {
+            let failed = match msg {
                 ApplyMsg::Command {index, command} => {
-                    failed = Self::check_logs(self.id, index, command, 
-                        &mut logs.deref_mut()).await.is_err();
+                    Self::check_logs(self.id, index, command, 
+                        &mut logs.deref_mut()).await.is_err()
                 },
-                ApplyMsg::Snapshot {..} if snap => {},
-                _ => logs.apply_err[self.id] = Some("Snapshot unexpected".to_string())
+                ApplyMsg::Snapshot {..} if snap => false,
+                _ => {
+                    logs.apply_err[self.id] = 
+                        Some("Snapshot unexpected".to_string());
+                    true
+                }
+            };
+            if failed {
+                self.apply_ch.close();
+                break;
+            }
+
+            if self.killed.load(Ordering::Relaxed) {
+                self.apply_ch.close();
             }
         }
     }
