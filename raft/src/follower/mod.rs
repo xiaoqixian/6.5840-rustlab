@@ -9,12 +9,16 @@ use crate::{
 };
 
 mod timer;
+use serde::Serialize;
 use timer::Timer;
 
+#[derive(Serialize)]
 pub struct Follower {
     core: RaftCore,
     logs: Logs,
+    #[serde(skip)]
     ev_q: RoleEvQueue,
+    #[serde(skip)]
     hb_timer: Timer
 }
 
@@ -85,6 +89,7 @@ impl Follower {
                 }
             };
             self.logs.update_commit(args.lci);
+            self.persist_state().await;
             entry_status
         };
         let reply = AppendEntriesReply {
@@ -109,13 +114,15 @@ impl Follower {
             }
         } else {
             self.core.term = args.term;
-            if self.logs.up_to_date(&args.last_log) {
+            let vote = if self.logs.up_to_date(&args.last_log) {
                 self.core.vote_for = Some(args.from);
                 self.hb_timer.reset();
                 VoteStatus::Granted
             } else {
                 VoteStatus::Rejected { term: myterm }
-            }
+            };
+            self.persist_state().await;
+            vote
         };
 
         let reply = RequestVoteReply {
@@ -130,6 +137,11 @@ impl Follower {
             QueryEntryReply::Exist
         } else { QueryEntryReply::NotExist };
         reply_tx.send(reply).unwrap();
+    }
+
+    async fn persist_state(&self) {
+        let state = bincode::serialize(self).unwrap();
+        self.core.persister.save(Some(state), None);
     }
 }
 

@@ -5,3 +5,14 @@ When the role of a node need to be transformed, like a follower want to be a can
 ### Event queue separation
 
 As the program keep running, the node can go through many rounds of role transformation. Every role has the role has the access to the event queue, so we must make sure that the last round role can not send any event to this round event queue.
+
+## Persistence
+
+### Serialization
+
+To save memory, the persistence is divided into three parts.
+- raft related information, like `term`, `vote_for`;
+- logs related information, like `offset`, `lci`, `cmd_cnd`;
+- logs
+
+

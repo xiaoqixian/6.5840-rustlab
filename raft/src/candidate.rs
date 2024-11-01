@@ -34,13 +34,23 @@ struct Poll {
     ev_q: RoleEvQueue
 }
 
+/// Test 3C: A Candidate does not persist its votes data.
+/// When it crashes and restarts, it lost all its votes, 
+/// which is fine, it starts as a follower, and followers who 
+/// vote for it can keep working.
+#[derive(Serialize)]
 pub struct Candidate {
     core: RaftCore,
     logs: Logs,
+    #[serde(skip)]
     ev_q: RoleEvQueue,
+    #[serde(skip)]
     active: Arc<AtomicBool>,
+    #[serde(skip)]
     voters: Vec<bool>,
+    #[serde(skip)]
     votes: usize,
+    #[serde(skip)]
     n: usize
 }
 
@@ -82,6 +92,7 @@ impl Candidate {
             Event::OutdateCandidate {new_term} => {
                 self.core.term = new_term;
                 let _ = self.ev_q.put(TO_FOLLOWER);
+                self.persist_state().await;
             },
             
             Event::ElectionTimeout => {
@@ -111,6 +122,7 @@ impl Candidate {
         let entry_status = if args.term >= myterm {
             self.core.term = args.term;
             let _ = self.ev_q.put(TO_FOLLOWER);
+            self.persist_state().await;
             EntryStatus::Hold
         } else {
             EntryStatus::Stale {
@@ -157,7 +169,7 @@ impl Candidate {
                 let _ = self.ev_q.put(TO_FOLLOWER);
                 let up_to_date = self.logs.up_to_date(&args.last_log);
 
-                if up_to_date {
+                let vote = if up_to_date {
                     self.core.vote_for = Some(args.from);
                     VoteStatus::Granted
                 } else {
@@ -169,7 +181,9 @@ impl Candidate {
                     VoteStatus::Rejected {
                         term: myterm
                     }
-                }
+                };
+                self.persist_state().await;
+                vote
             }
         };
         
@@ -198,6 +212,11 @@ impl Candidate {
                 let _ = self.ev_q.put(TO_LEADER);
             }
         }
+    }
+
+    async fn persist_state(&self) {
+        let state = bincode::serialize(self).unwrap();
+        self.core.persister.save(Some(state), None).await;
     }
 }
 

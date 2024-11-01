@@ -37,39 +37,45 @@ pub struct LogEntry {
     pub log_type: LogType
 }
 
+#[derive(Serialize)]
 pub struct Logs {
+    #[serde(skip)]
     me: usize,
     logs: Vec<LogEntry>,
     offset: usize,
     cmd_cnt: usize,
     lci: usize,
-    apply_tx: UbTx<ApplyEntry>
+    #[serde(skip)]
+    apply_tx: UbTx<ApplyEntry>,
+}
+
+/// LogsInfo contains essential information needed for Logs to recover itself.
+#[derive(Serialize, Deserialize)]
+pub struct LogsInfo {
+    offset: usize,
+    lci: usize,
+    cmd_cnt: usize,
+    logs: Vec<LogEntry>,
 }
 
 impl Logs {
-    pub fn new(me: usize, apply_tx: UbTx<ApplyMsg>) -> Self {
-        let mut logs = Vec::new();
-        logs.push(LogEntry {
-            index: 0,
-            term: 0,
-            log_type: LogType::Noop
-        });
-
+    pub fn new(
+        me: usize, 
+        apply_tx: UbTx<ApplyMsg>,
+        logs_info: LogsInfo,
+        lai: Option<usize>
+    ) -> Self {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(Applier::new(apply_tx).start(rx));
 
         Self {
             me,
-            logs,
-            offset: 0,
-            cmd_cnt: 0,
-            lci: 0,
-            apply_tx: tx
+            logs: logs_info.logs,
+            offset: logs_info.offset,
+            cmd_cnt: logs_info.cmd_cnt,
+            lci: logs_info.lci,
+            apply_tx: tx,
         }
-    }
-
-    pub fn _lii(&self) -> usize {
-        self.offset + 1
     }
 
     pub fn lci(&self) -> usize {
@@ -279,5 +285,20 @@ impl Into<Option<(usize, Vec<u8>)>> for LogEntry {
 impl std::fmt::Display for Logs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "[Logs {}]", self.me)
+    }
+}
+
+impl std::default::Default for LogsInfo {
+    fn default() -> Self {
+        Self {
+            logs: vec![LogEntry {
+                index: 0,
+                term: 0,
+                log_type: LogType::Noop
+            }],
+            offset: 0,
+            cmd_cnt: 0,
+            lci: 0
+        }
     }
 }

@@ -44,12 +44,19 @@ macro_rules! ld_logs_method {
 
 impl LdLogs {
     ld_logs_method!(write, push_cmd(term: usize, cmd: Vec<u8>) -> (usize, usize));
-    // ld_logs_method!(write, push_noop(term: usize) -> usize);
-    // ld_logs_method!(read,  lci() -> usize);
-    // ld_logs_method!(read,  last_log_info() -> LogInfo);
     ld_logs_method!(write, update_commit(lci: usize));
     ld_logs_method!(read,  up_to_date(log: &LogInfo) -> bool);
     ld_logs_method!(read, log_exist(log: &LogInfo) -> bool);
+}
+
+impl serde::Serialize for LdLogs {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer {
+        let guard = self.logs.read().unwrap();
+        let logs = guard.as_ref().unwrap();
+        logs.serialize(serializer)
+    }
 }
 
 /// All ReplLogs functions return a Result, Err represents that the Logs 

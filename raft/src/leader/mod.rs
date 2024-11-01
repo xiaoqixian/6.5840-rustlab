@@ -3,6 +3,7 @@
 // Author: https://github.com/xiaoqixian
 
 use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
+use serde::Serialize;
 
 use crate::{candidate::VoteStatus, event::{Event, TO_FOLLOWER}, info, raft::RaftCore, role::{RoleCore, RoleEvQueue, Trans}, service::{AppendEntriesArgs, AppendEntriesReply, EntryStatus, QueryEntryArgs, QueryEntryReply, RequestVoteArgs, RequestVoteReply}, utils::Peer, warn, OneTx};
 
@@ -13,11 +14,15 @@ use counter::ReplCounter;
 use ldlogs::{LdLogs, ReplLogs};
 use replicator::Replicator;
 
+#[derive(Serialize)]
 pub struct Leader {
     core: RaftCore,
     logs: LdLogs,
+    #[serde(skip)]
     ev_q: RoleEvQueue,
+    #[serde(skip)]
     active: Arc<AtomicBool>,
+    #[serde(skip)]
     repl_counter: ReplCounter,
 }
 
@@ -52,11 +57,13 @@ impl Leader {
             Event::UpdateCommit(lci) => {
                 info!("{self}: update commit to {lci}");
                 self.logs.update_commit(lci);
+                self.persist_state().await;
             },
 
             Event::StaleLeader {new_term} => {
                 self.core.term = new_term;
                 let _ = self.ev_q.put(TO_FOLLOWER);
+                self.persist_state().await;
             }
 
             ev => panic!("Unexpected event for a leader: {ev}")
@@ -72,6 +79,7 @@ impl Leader {
     async fn start_cmd(&self, cmd: Vec<u8>, reply_tx: OneTx<Option<(usize, usize)>>) {
         let term = self.core.term;
         let (idx, cmd_idx) = self.logs.push_cmd(term, cmd);
+        self.persist_state().await;
         self.repl_counter.watch_idx(idx);
         if let Err(_) = reply_tx.send(Some((cmd_idx, term))) {
             warn!("start_cmd() reply failed");
@@ -92,6 +100,7 @@ impl Leader {
                 self.core.me, args.from, myterm);
         } else {
             self.core.term = args.term;
+            self.persist_state().await;
             let _ = self.ev_q.put(TO_FOLLOWER);
             EntryStatus::Hold
         };
@@ -113,7 +122,7 @@ impl Leader {
             self.core.term = args.term;
             let _ = self.ev_q.put(TO_FOLLOWER);
             
-            if self.logs.up_to_date(&args.last_log) {
+            let status = if self.logs.up_to_date(&args.last_log) {
                 self.core.vote_for = Some(args.from);
                 VoteStatus::Granted
             } else {
@@ -122,7 +131,9 @@ impl Leader {
                 // election as long as the Reject.term is not greater 
                 // than the candidate's.
                 VoteStatus::Rejected {term: myterm}
-            }
+            };
+            self.persist_state().await;
+            status
         };
 
         let reply = RequestVoteReply {
@@ -137,6 +148,11 @@ impl Leader {
             QueryEntryReply::Exist
         } else { QueryEntryReply::NotExist };
         reply_tx.send(reply).unwrap();
+    }
+
+    async fn persist_state(&self) {
+        let state = bincode::serialize(self).unwrap();
+        self.core.persister.save(Some(state), None).await;
     }
 }
 

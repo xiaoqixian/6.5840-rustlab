@@ -5,15 +5,28 @@
 use std::sync::Arc;
 
 use labrpc::client::Client;
+use serde::{Serialize, Deserialize};
 
 use crate::{
-    event::{EvQueue, Event}, follower::Follower, info, logs::Logs, persist::Persister, role::{Role, RoleCore, RoleEvQueue}, service::RpcService, ApplyMsg, UbRx, UbTx
+    event::{EvQueue, Event}, 
+    follower::Follower, 
+    info, 
+    logs::Logs, 
+    persist::{PersistStateDes, Persister}, 
+    role::{Role, RoleCore, RoleEvQueue}, 
+    service::RpcService, 
+    ApplyMsg, UbRx, UbTx
 };
 
+#[derive(Serialize)]
 pub(crate) struct RaftCore {
+    #[serde(skip)]
     pub me: usize,
+    #[serde(skip)]
     pub rpc_client: Client,
-    pub _persister: Persister,
+    // pub persister: Arc<Mutex<RaftPersister>>,
+    #[serde(skip)]
+    pub persister: Persister,
     pub term: usize,
     // ev_q is shared
     pub vote_for: Option<usize>
@@ -22,6 +35,12 @@ pub(crate) struct RaftCore {
 #[derive(Clone)]
 pub(crate) struct RaftHandle {
     pub ev_q: Arc<EvQueue>,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+pub struct RaftInfo {
+    term: usize,
+    vote_for: Option<usize>
 }
 
 // The Raft object to implement a single raft node.
@@ -41,37 +60,52 @@ pub struct Raft {
 /// best way. For example, use the async waitable lock to replace the 
 /// std lock.
 impl Raft {
-    /// To create a Raft server.
+    /// To create a new raft node.
     ///
-    /// You can dial any other peers with client unicast or multicast method.
+    /// If persister.raft_state().await.is_some() or 
+    /// persister.snapshot().await.is_some(),
+    /// you are supposed to recover raft from the persist data.
     ///
-    /// `me` is the id of this Raft server, each Raft server owns an unique 
-    /// id.
+    /// # Arguments
     ///
-    /// `persister` is a place for this server to save its persistent state 
-    /// and also holds the most recent saved state, if any.
-    ///
-    /// `apply_ch` is a channel on which the tester or service expects Raft 
-    /// to send ApplyMsg message.
-    pub async fn new(rpc_client: Client, me: usize, persister: Persister, 
-        apply_ch: UbTx<ApplyMsg>) -> Self {
-
+    /// * `rpc_client` - the RPC client that can be used to add RPC services
+    /// and dial RPC requests to peers.
+    /// * `me` - the id of this raft node.
+    /// * `persister` - a persister is used to persist the state of the 
+    /// raft node, so the node can recover itself from a crash and restart.
+    /// * `apply_ch` - when a command is confirmed as committed, the raft 
+    /// node can apply it by sending it to the apply channel.
+    /// * `lai` - last applied command index, the Applier promises that 
+    /// all commands that are sent through `apply_ch` successfully will 
+    /// be applied, 
+    pub async fn new(
+        rpc_client: Client, 
+        me: usize, 
+        persister: Persister, 
+        apply_ch: UbTx<ApplyMsg>,
+        lai: Option<usize>
+    ) -> Self {
         let (ev_ch_tx, ev_ch_rx) = tokio::sync::mpsc::unbounded_channel();
         let ev_q = Arc::new(EvQueue::new(ev_ch_tx, me));
+
+        let state: PersistStateDes = match persister.raft_state() {
+            Some(bin) => bincode::deserialize_from(&bin[..]).unwrap(),
+            None => Default::default()
+        };
 
         let core = RaftCore {
             me,
             rpc_client,
-            _persister: persister,
-            term: 0,
-            vote_for: None
+            persister,
+            term: state.raft_info.term,
+            vote_for: state.raft_info.vote_for
         };
 
         let handle = RaftHandle {
             ev_q: ev_q.clone(),
         };
 
-        let logs = Logs::new(me, apply_ch);
+        let logs = Logs::new(me, apply_ch, state.logs_info, lai);
 
         core.rpc_client.add_service("RpcService".to_string(), 
             Box::new(RpcService::new(handle))).await;
@@ -91,8 +125,12 @@ impl Raft {
         }
     }
 
-    /// Get the state of this server, 
-    /// return the server's term and if itself believes it's a leader.
+    /// Get the state of this raft node.
+    /// 
+    /// # Retrun
+    ///
+    /// Returns the term of the raft node and if the node believes 
+    /// its a leader.
     pub async fn get_state(&self) -> (usize, bool) {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let ev = Event::GetState(tx);
@@ -100,31 +138,17 @@ impl Raft {
         rx.await.unwrap()
     }
 
-    /// Persist essential data with persister, the data will be used 
-    /// on the next restart.
-    pub async fn persist(&self) {
-        // Your code here (3C).
-        // Example: 
-        // Create a serilizable struct Data to store necessary data
-        // let data = Data::new(self);
-        // let bytes = bincode::serilize(&data).unwrap();
-        // self.persister.save(bytes).await;
-    }
-
-    /// Read data from a byte buffer to restore Raft server state.
-    pub async fn read_persist(&mut self, _bytes: &[u8]) {
-        // read Data from bytes
-        // Example:
-        // let data: Data = bincode::deserilize_from(&bytes).unwrap();
-        // self.xxx = data.xxx;
-        // self.yyy = data.yyy;
-        // ...
-    }
-
-    /// The service says it has created a snapshot that has
-    /// all info up to and including index. this means the
-    /// service no longer needs the log through (and including)
-    /// that index. Raft should now trim its log as much as possible.
+    /// In test 3D, the tester may occasionally take a snapshot, 
+    /// and provide the snapshot to all raft nodes through this 
+    /// function.
+    /// # Arguments
+    ///
+    /// * `index` - the last log index included in the snapshot.
+    /// * `snapshot` - the snapshot bytes.
+    ///
+    /// # Return
+    ///
+    /// Nothing.
     pub async fn snapshot(&self, _index: usize, _snapshot: Vec<u8>) {
 
     }
@@ -175,3 +199,13 @@ impl std::fmt::Display for Raft {
         write!(f, "[Raft {}]", self.me)
     }
 }
+
+impl From<&RaftCore> for RaftInfo {
+    fn from(core: &RaftCore) -> Self {
+        Self {
+            term: core.term,
+            vote_for: core.vote_for
+        }
+    }
+}
+
