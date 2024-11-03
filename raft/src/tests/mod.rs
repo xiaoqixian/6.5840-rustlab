@@ -17,7 +17,7 @@ use std::{collections::HashMap, fmt::{Debug, Display}, future::Future, ops::Dere
 
 use labrpc::network::Network;
 use serde::{de::DeserializeOwned, Serialize};
-use tokio::{sync::{Mutex, RwLock}, task::JoinHandle};
+use tokio::{sync::Mutex, task::JoinHandle};
 use crate::{ApplyMsg, persist::PersisterManager, raft::Raft, UbRx};
 use colored::Colorize;
 
@@ -57,15 +57,6 @@ struct Node {
     last_applied: Option<usize>
 }
 
-struct Config<T> {
-    n: usize,
-    net: Network,
-    pub nodes: Vec<Node>,
-    logs: Arc<Mutex<Logs<T>>>,
-    
-    start: std::time::Instant,
-}
-
 struct Logs<T> {
     logs: Vec<Vec<T>>,
     apply_err: Vec<Option<String>>,
@@ -80,9 +71,13 @@ struct Applier<T> {
 }
 
 /// T: the command type
-#[derive(Clone)]
 struct Tester<T> {
-    config: Arc<RwLock<Config<T>>>,
+    n: usize,
+    net: Network,
+    pub nodes: Vec<Node>,
+    logs: Arc<Mutex<Logs<T>>>,
+    start: std::time::Instant,
+    // config: Arc<RwLock<Config<T>>>,
     finished: Arc<AtomicBool>
 }
 
@@ -92,9 +87,62 @@ impl<T> WantedCmd for T
 where T: Eq + Clone + Serialize + DeserializeOwned + Display 
     + Debug + Send + 'static {}
 
-impl<T> Config<T>
+impl<T> Tester<T> 
     where T: WantedCmd
 {
+    pub async fn new(n: usize, reliable: bool, snapshot: bool) -> Result<Self, String> {
+        let mut tester = Self { 
+            n,
+            net: Network::new(n).reliable(reliable).long_delay(true),
+            logs: Arc::new(Mutex::new(Logs {
+                logs: vec![Vec::new(); n],
+                apply_err: vec![None; n],
+                max_cmd_idx: 0
+            })),
+            nodes: (0..n).into_iter()
+                .map(|id| Node {
+                    id,
+                    persister: PersisterManager::new(),
+                    core: None,
+                    connected: true,
+                    last_applied: None
+                })
+                .collect(),
+            start: std::time::Instant::now(),
+            finished: Default::default()
+        };
+
+        for i in 0..n {
+            tester.start_one(i, snapshot, false).await?;
+        }
+        
+        Ok(tester)
+    }
+
+    async fn begin<D: std::fmt::Display>(&mut self, desc: D) {
+        println!("{}", format!("{desc}...").truecolor(178,225,167));
+        self.start = std::time::Instant::now();
+    }
+
+    async fn end(&mut self) -> Result<(), String> {
+        self.finished.store(true, Ordering::Release);
+        
+        let t = self.start.elapsed();
+        let nrpc = self.net.rpc_cnt();
+        let nbytes = self.net.byte_cnt();
+        let ncmd = self.logs.lock().await.max_cmd_idx;
+        
+        for id in 0..self.n {
+            self.crash_one(id).await?;
+        }
+        self.net.close();
+
+        greet!(" ... Passed --");
+        greet!(" {}ms, {} peers, {} rpc, {} bytes, {} cmds", 
+            t.as_millis(), self.n, nrpc, nbytes, ncmd);
+        Ok(())
+    }
+
     async fn crash_node(&mut self, id: usize) -> Result<(), String> {
         let node = &mut self.nodes[id];
         if let Some(core) = node.core.take() {
@@ -112,102 +160,39 @@ impl<T> Config<T>
                 return Err("Raft kill timeout, expect no more than 1sec".to_string());
             }
         }
-        Ok(())
-    }
-}
 
-impl<T> Tester<T> 
-    where T: WantedCmd
-{
-    pub async fn new(n: usize, reliable: bool, snapshot: bool) -> Result<Self, String> {
-        let config = Config {
-            n,
-            net: Network::new(n).reliable(reliable).long_delay(true),
-            logs: Arc::new(Mutex::new(Logs {
-                logs: vec![Vec::new(); n],
-                apply_err: vec![None; n],
-                max_cmd_idx: 0
-            })),
-            nodes: (0..n).into_iter()
-                .map(|id| Node {
-                    id,
-                    persister: PersisterManager::new(),
-                    core: None,
-                    connected: true,
-                    last_applied: None
-                })
-                .collect(),
-            start: std::time::Instant::now()
-        };
-        
-        let tester = Self { 
-            config: Arc::new(RwLock::new(config)),
-            finished: Default::default()
-        };
-
-        for i in 0..n {
-            tester.start_one(i, snapshot, false).await?;
-        }
-        
-        Ok(tester)
-    }
-
-    async fn begin<D: std::fmt::Display>(&self, desc: D) {
-        println!("{}", format!("{desc}...").truecolor(178,225,167));
-        self.config.write().await.start = std::time::Instant::now();
-    }
-
-    async fn end(&self) -> Result<(), String> {
-        self.finished.store(true, Ordering::Release);
-        let mut config = self.config.write().await;
-        
-        let t = config.start.elapsed();
-        let nrpc = config.net.rpc_cnt();
-        let nbytes = config.net.byte_cnt();
-        let ncmd = config.logs.lock().await.max_cmd_idx;
-        
-        for node in config.nodes.iter_mut() {
-            self.crash_node(node).await?;
-        }
-        config.net.close();
-
-        greet!(" ... Passed --");
-        greet!(" {}ms, {} peers, {} rpc, {} bytes, {} cmds", 
-            t.as_millis(), config.n, nrpc, nbytes, ncmd);
         Ok(())
     }
 
     /// If not restart, only the node with raft.is_none() will be started.
     /// Otherwise, the node will be restarted no matter if there is an alive raft node.
     /// Return a bool to indicate if really a node is restarted.
-    async fn start_one(&self, id: usize, snapshot: bool, restart: bool) -> Result<bool, String> {
-        let mut config = self.config.write().await;
-        let Config {
-            net,
-            nodes,
-            logs,
-            ..
-        } = config.deref_mut();
-        let node = &mut nodes[id];
-
-        if node.core.is_some() {
+    async fn start_one(&mut self, id: usize, snapshot: bool, restart: bool) -> Result<bool, String> {
+        if self.nodes[id].core.is_some() {
             if !restart {
                 return Ok(false);
             }
-            self.crash_node(node).await?;
+            self.crash_node(id).await?;
         }
 
-        if let Some(snapshot) = node.persister.snapshot() {
+        if let Some(snapshot) = self.nodes[id].persister.snapshot() {
             self.ingest_snapshot(id, snapshot, None).await;
         }
 
-        let client = net.make_client(id).await;
+        let node = &mut self.nodes[id];
+
+        let client= self.net.make_client(id).await;
         let persister = node.persister.make_new();
+        let lai = {
+            let len = self.logs.lock().await.logs.get(id).unwrap().len();
+            if len == 0 { None }
+            else { Some(len-1) }
+        };
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let raft = match tokio::time::timeout(
             Duration::from_secs(1),
-            Raft::new(client, id, persister, tx)
+            Raft::new(client, id, persister, tx, lai)
         ).await {
             Ok(raft) => raft,
             Err(_) => return Err(format!("Raft instantiation timeout, expect no more than 1sec"))
@@ -216,7 +201,7 @@ impl<T> Tester<T>
         let applier_killed = Arc::<AtomicBool>::default();
         let applier_handle = tokio::task::spawn(Applier {
             id,
-            logs: logs.clone(),
+            logs: self.logs.clone(),
             apply_ch: rx,
             killed: applier_killed.clone()
         }.run(snapshot));
@@ -230,23 +215,13 @@ impl<T> Tester<T>
         Ok(true)
     }
 
-    async fn crash_some(&self, ids: &[usize]) -> Result<(), String> {
-        let mut config = self.config.write().await;
-        let Config { net, nodes, .. } = &mut config.deref_mut();
-
-        for &id in ids {
-            let node = &mut nodes[id];
-            if node.connected {
-                node.connected = false;
-                net.connect(id, false).await;
-            }
-            self.crash_node(node).await?;
+    async fn crash_one(&mut self, id: usize) -> Result<(), String> {
+        let node = &mut self.nodes[id];
+        if node.connected {
+            node.connected = false;
+            self.net.connect(id, false).await;
         }
-        Ok(())
-    }
-
-    async fn crash_one(&self, id: usize) -> Result<(), String> {
-        self.crash_some(&[id]).await
+        self.crash_node(id).await
     }
 
     /// Check if only one leader exist for a specific term, 
@@ -255,6 +230,7 @@ impl<T> Tester<T>
     /// times to find a leader, panics when no leader is found.
     /// Return the id of leader that has the newest term.
     async fn check_one_leader(&self) -> Result<usize, String> {
+        // check for 10 times.
         for _ in 0..10 {
             let ms = (rand::random::<u64>() % 100) + 450;
             let d = std::time::Duration::from_millis(ms);
@@ -262,21 +238,17 @@ impl<T> Tester<T>
 
             let mut leader_terms = HashMap::<usize, usize>::new();
 
-            {
-                let config = self.config.read().await;
+            for (id, node) in self.nodes.iter().enumerate() {
+                let (term, is_leader) = match &node.core {
+                    Some(core) => core.raft.get_state().await,
+                    None => continue
+                };
                 
-                for (id, node) in config.nodes.iter().enumerate() {
-                    let (term, is_leader) = match &node.core {
-                        Some(core) => core.raft.get_state().await,
-                        None => continue
-                    };
-                    
-                    if is_leader {
-                        if leader_terms.get(&term).is_some() {
-                            return Err(format!("Term {term} has multiple leaders"));
-                        }
-                        leader_terms.insert(term, id);
+                if is_leader {
+                    if leader_terms.get(&term).is_some() {
+                        return Err(format!("Term {term} has multiple leaders"));
                     }
+                    leader_terms.insert(term, id);
                 }
             }
 
@@ -290,11 +262,10 @@ impl<T> Tester<T>
 
     /// Iterate all nodes, ask each one to start a command, 
     /// if success, return its id, the command index and term.
-    async fn let_one_start<F>(&self, f: F) -> Option<(usize, (usize, usize))> 
+    async fn let_one_start_by<F>(&self, f: F) -> Option<(usize, (usize, usize))> 
         where F: Fn(usize) -> T
     {
-        for (id, raft) in self.config.read().await
-            .nodes.iter().enumerate()
+        for (id, raft) in self.nodes.iter().enumerate()
             .filter_map(|(id, node)| 
                 node.core.as_ref().map(|core| (id, &core.raft)))
         {
@@ -307,15 +278,11 @@ impl<T> Tester<T>
     }
 
     /// Let a specific node start
-    async fn let_it_start<F>(&self, id: usize, f: F) -> Option<(usize, usize)> 
-        where F: FnOnce() -> T
-    {
-        match self.config.read().await
-            .nodes.get(id).unwrap()
-            .core.as_ref()
+    async fn let_it_start(&self, id: usize, cmd: &T) -> Option<(usize, usize)> {
+        match self.nodes.get(id).unwrap().core.as_ref()
         {
             Some(core) => {
-                let cmd = bincode::serialize(&f()).unwrap();
+                let cmd = bincode::serialize(cmd).unwrap();
                 core.raft.start(cmd).await
             },
             None => None
@@ -326,9 +293,8 @@ impl<T> Tester<T>
     /// return the term if agree.
     async fn check_terms(&self) -> Result<usize, String> {
         let mut term = None;
-        let config = self.config.read().await;
 
-        for (id, node) in config.nodes.iter().enumerate() {
+        for (id, node) in self.nodes.iter().enumerate() {
             if let Some(core) = &node.core {
                 let (iterm, _) = core.raft.get_state().await;
                 term = match term {
@@ -344,8 +310,7 @@ impl<T> Tester<T>
 
     // expect none of the nodes claims to be a leader
     async fn check_no_leader(&self) -> Result<(), String> {
-        let config = self.config.read().await;
-        for (id, node) in config.nodes.iter().enumerate() {
+        for (id, node) in self.nodes.iter().enumerate() {
             if !node.connected || node.core.is_none() {
                 continue;
             }
@@ -386,7 +351,7 @@ impl<T> Tester<T>
                 // for raft in self.config.read().await.nodes.iter()
                 //     .filter(|node| node.connected)
                 //     .filter_map(|node| node.raft.as_ref())
-                for (_raft_i, raft) in self.config.read().await.nodes.iter().enumerate()
+                for (_raft_i, raft) in self.nodes.iter().enumerate()
                     .filter(|(_, node)| node.connected)
                     .filter_map(|(i, node)| 
                         node.core.as_ref().map(|core| (i, &core.raft)))
@@ -446,8 +411,7 @@ impl<T> Tester<T>
     async fn n_committed(&self, idx: usize) -> Result<(usize, Option<T>), String> {
         let mut cnt = 0usize;
         let mut cmd = None;
-        let config = self.config.read().await;
-        let logs = config.logs.lock().await;
+        let logs = self.logs.lock().await;
         for (i, log) in logs.logs.iter().enumerate() {
             if let Some(err_msg) = &logs.apply_err[i] {
                 return Err(err_msg.clone());
@@ -490,7 +454,7 @@ impl<T> Tester<T>
             }
 
             if let Some(start_term) = start_term {
-                for core in self.config.read().await.nodes.iter()
+                for core in self.nodes.iter()
                     .filter_map(|node| node.core.as_ref())
                 {
                     let (term, _) = core.raft.get_state().await;
@@ -513,36 +477,35 @@ impl<T> Tester<T>
 
     }
 
-    async fn enable(&self, id: usize, enable: bool) {
-        let mut config = self.config.write().await;
-        config.nodes[id].connected = enable;
-        config.net.connect(id, enable).await;
+    async fn enable(&mut self, id: usize, enable: bool) {
+        self.nodes[id].connected = enable;
+        self.net.connect(id, enable).await;
     }
 
-    async fn disconnect(&self, id: usize) {
+    async fn disconnect(&mut self, id: usize) {
         self.enable(id, false).await;
     }
-    async fn connect(&self, id: usize) {
+    async fn connect(&mut self, id: usize) {
         self.enable(id, true).await;
     }
 
     async fn connected(&self, id: usize) -> bool {
-        self.config.read().await.nodes[id].connected
+        self.nodes[id].connected
     }
 
     async fn byte_cnt(&self) -> u64 {
-        self.config.read().await.net.byte_cnt()
+        self.net.byte_cnt()
     }
     async fn rpc_cnt(&self) -> u32 {
-        self.config.read().await.net.rpc_cnt()
+        self.net.rpc_cnt()
     }
 
     async fn reliable(&self, value: bool) {
-        self.config.read().await.net.set_reliable(value);
+        self.net.set_reliable(value);
     }
 
     async fn long_reordering(&self, value: bool) {
-        self.config.read().await.net.set_long_reordering(value);
+        self.net.set_long_reordering(value);
     }
 }
 
@@ -615,9 +578,8 @@ impl<T> Applier<T>
         for (i, log) in logs.iter().enumerate() {
             match log.get(cmd_idx) {
                 Some(val) if *val != cmd_value => {
-                    let err_msg = format!("commit index = {cmd_idx} 
-                        server={id} {cmd_value} != server={i} {val}");
-                    return Err(err_msg);
+                    return Err(format!("commit index = {cmd_idx} 
+                        server={id} {cmd_value} != server={i} {val}"));
                 },
                 _ => {}
             }

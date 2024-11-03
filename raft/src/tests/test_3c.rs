@@ -4,6 +4,8 @@
 
 use std::{sync::{atomic::{AtomicBool, Ordering}, Arc}, time::Duration};
 
+use tokio::sync::Mutex;
+
 use super::{
     Tester, timeout_test, ELECTION_TIMEOUT, 
     utils::{gen_bool, randu32, randu64, randusize}
@@ -23,7 +25,7 @@ macro_rules! debug {
 async fn test3c_persist1() {
     async fn persist1() -> Result<(), String> {
         const N: usize = 3;
-        let tester = Tester::<u32>::new(N, true, false).await?;
+        let mut tester = Tester::<u32>::new(N, true, false).await?;
         tester.begin("Test 3C: basic persistence").await;
 
         let starti = tester.must_submit_cmd(&11, N, true).await?;
@@ -68,7 +70,7 @@ async fn test3c_persist1() {
 async fn test3c_persist2() {
     async fn persist2() -> Result<(), String> {
         const N: usize = 5;
-        let tester = Tester::<u32>::new(N, true, false).await?;
+        let mut tester = Tester::<u32>::new(N, true, false).await?;
         tester.begin("Test 3C: more persistence").await;
 
         let mut cmd = 11u32;
@@ -114,7 +116,7 @@ async fn test3c_persist2() {
 async fn test3c_persist3() {
     async fn persist3() -> Result<(), String> {
         const N: usize = 3;
-        let tester = Tester::<u32>::new(N, true, false).await?;
+        let mut tester = Tester::<u32>::new(N, true, false).await?;
         tester.begin("Test 3C: partitioned leader and one follower crash, leader restarts").await;
 
         tester.must_submit_cmd(&101, N, true).await?;
@@ -124,10 +126,8 @@ async fn test3c_persist3() {
 
         tester.must_submit_cmd(&102, N-1, true).await?;
         
-        tester.crash_some(&[
-            leader,
-            (leader + 1) % N
-        ]).await?;
+        tester.crash_one(leader).await?;
+        tester.crash_one((leader + 1) % N).await?;
         tester.connect((leader + 2) % N).await;
 
         tester.start_one(leader, false, true).await?;
@@ -156,7 +156,7 @@ async fn test3c_figure8() {
     async fn figure8() -> Result<(), String> {
         const N: usize = 5;
         const QUORUM: usize = (N + 1) / 2;
-        let tester = Tester::<u32>::new(N, true, false).await?;
+        let mut tester = Tester::<u32>::new(N, true, false).await?;
         tester.begin("Test 3C: figure 8").await;
 
         let randu32 = rand::random::<u32>;
@@ -166,12 +166,11 @@ async fn test3c_figure8() {
         for _ in 0..1000 {
             let leader = {
                 let mut leader = None;
-                let config = tester.config.read().await;
-                for (id, raft) in config.nodes.iter().enumerate()
-                    .filter_map(|(id, node)| node.raft.as_ref().map(|raft| (id, raft)))
+                for (id, core) in tester.nodes.iter().enumerate()
+                    .filter_map(|(id, node)| node.core.as_ref().map(|raft| (id, raft)))
                 {
                     let cmd = bincode::serialize(&randu32()).unwrap();
-                    if raft.start(cmd).await.is_some() {
+                    if core.raft.start(cmd).await.is_some() {
                         leader = Some(id);
                     }
                 }
@@ -212,26 +211,24 @@ async fn test3c_figure8() {
 async fn test3c_unreliable_agree() {
     async fn unreliable_agree() -> Result<(), String> {
         const N: usize = 5;
-        let tester = Tester::<u32>::new(N, false, false).await?;
+        let mut tester = Tester::<u32>::new(N, false, false).await?;
         tester.begin("Test 3C: unreliable agreement").await;
 
-        use std::sync::Arc;
         use tokio::task::JoinSet;
-        let tester = Arc::new(tester);
+        let safe_tester = Arc::new(Mutex::new(tester));
         let mut join_set = JoinSet::new();
         for i in 1..50 {
             for j in 0..4 {
-                let tester = tester.clone();
+                let safe_tester = safe_tester.clone();
                 join_set.spawn(async move {
-                    tester.submit_cmd(&(100*i + j), 1, true).await?;
+                    safe_tester.lock().await.submit_cmd(&(100*i + j), 1, true).await?;
                     Ok(())
                 });
             }
-            let tester = tester.clone();
-            tester.submit_cmd(&i, 1, true).await?;
+            safe_tester.lock().await.submit_cmd(&i, 1, true).await?;
         }
         
-        tester.reliable(true).await;
+        safe_tester.lock().await.reliable(true).await;
         
         if let Some(e) = join_set.join_all().await
             .into_iter()
@@ -239,6 +236,11 @@ async fn test3c_unreliable_agree() {
         {
             return e;
         }
+
+        tester = match Arc::try_unwrap(safe_tester) {
+            Ok(m) => m.into_inner(),
+            Err(_) => panic!("Arc unwrap failed")
+        };
 
         tester.must_submit_cmd(&100, N, true).await?;
         tester.end().await
@@ -251,7 +253,7 @@ async fn test3c_figure8_unreliable() {
     async fn figure8_unreliable() -> Result<(), String> {
         const N: usize = 5;
         const QUORUM: usize = (N + 1) / 2;
-        let tester = Tester::<u32>::new(N, false, false).await?;
+        let mut tester = Tester::<u32>::new(N, false, false).await?;
         tester.begin("Test 3C: figure 8 unreliable").await;
 
         let gen = |_: usize| randu32() % 10000;
@@ -264,7 +266,7 @@ async fn test3c_figure8_unreliable() {
                 tester.long_reordering(true).await;
             }
 
-            let leader = tester.let_one_start(gen).await
+            let leader = tester.let_one_start_by(gen).await
                 .map(|(id, _)| id);
             
             let ms = if gen_bool(0.1) {
@@ -306,7 +308,7 @@ async fn test3c_figure8_unreliable() {
 /// Expect that all workers observe a same series of commands.
 async fn internal_churn(reliable: bool) -> Result<(), String> {
     const N: usize = 5;
-    let tester = Tester::<u32>::new(N, reliable, false).await?;
+    let mut tester = Tester::<u32>::new(N, reliable, false).await?;
     tester.begin(
         if reliable {
             "Test 3C: churn"
@@ -319,7 +321,7 @@ async fn internal_churn(reliable: bool) -> Result<(), String> {
         me: usize,
         n: usize,
         flag: Arc<AtomicBool>,
-        tester: Tester<u32>
+        tester: Arc<Mutex<Tester<u32>>>
     }
 
     /// While the flag is true, keep letting raft nodes submit commands.
@@ -332,7 +334,8 @@ async fn internal_churn(reliable: bool) -> Result<(), String> {
             let mut cmd_idx = None;
             let the_cmd = randu32();
             for i in 0..ctx.n {
-                if let Some((idx, _)) = ctx.tester.let_it_start(i, || the_cmd).await {
+                let tester = ctx.tester.lock().await;
+                if let Some((idx, _)) = tester.let_it_start(i, &the_cmd).await {
                     cmd_idx = Some(idx);
                 }
             }
@@ -341,7 +344,7 @@ async fn internal_churn(reliable: bool) -> Result<(), String> {
                 // maybe leader will commit our command, maybe not.
                 // but don't wait forever.
                 for ms in [10, 20, 50, 100, 200] {
-                    let (_, cmd) = ctx.tester.n_committed(cmd_idx).await?;
+                    let (_, cmd) = ctx.tester.lock().await.n_committed(cmd_idx).await?;
                     if let Some(cmd) = cmd {
                         if cmd == the_cmd {
                             ret.push(the_cmd);
@@ -360,56 +363,67 @@ async fn internal_churn(reliable: bool) -> Result<(), String> {
 
     let start_index = tester.must_submit_cmd(&randu32(), N, true).await?;
 
-    let flag = Arc::new(AtomicBool::new(true));
-    let mut join_set = tokio::task::JoinSet::new();
-    for i in 0..3 {
-        join_set.spawn(worker(Context {
-            me: i,
-            n: N,
-            flag: flag.clone(),
-            tester: tester.clone()
-        }));
-    }
-
-    for _ in 0..20 {
-        if gen_bool(0.2) {
-            tester.disconnect(randusize() % N).await;
+    let values = {
+        let flag = Arc::new(AtomicBool::new(true));
+        let mut join_set = tokio::task::JoinSet::new();
+        let safe_tester = Arc::new(Mutex::new(tester));
+        
+        for i in 0..3 {
+            join_set.spawn(worker(Context {
+                me: i,
+                n: N,
+                flag: flag.clone(),
+                tester: safe_tester.clone()
+            }));
         }
 
-        if gen_bool(0.5) {
-            let id = randusize() % N;
-            tester.start_one(id, false, false).await?;
-            tester.connect(id).await;
+        for _ in 0..20 {
+            if gen_bool(0.2) {
+                safe_tester.lock().await.disconnect(randusize() % N).await;
+            }
+
+            if gen_bool(0.5) {
+                let id = randusize() % N;
+                safe_tester.lock().await.start_one(id, false, false).await?;
+                safe_tester.lock().await.connect(id).await;
+            }
+
+            if gen_bool(0.2) {
+                safe_tester.lock().await.crash_one(randusize() % N).await?;
+            }
+
+            // Make crash/restart infrequent enough that the peers can often 
+            // keep up, but not so infrequent that everything has settled down
+            // from the change to the next.
+            // Pick a value smaller than the ELECTION_TIMEOUT, but not 
+            // hugely smaller.
+            tokio::time::sleep(ELECTION_TIMEOUT * 7 / 10).await;
         }
 
-        if gen_bool(0.2) {
-            tester.crash_one(randusize() % N).await?;
+        tokio::time::sleep(ELECTION_TIMEOUT).await;
+        safe_tester.lock().await.reliable(true).await;
+
+        for i in 0..N {
+            safe_tester.lock().await.start_one(i, false, false).await?;
+            safe_tester.lock().await.connect(i).await;
         }
 
-        // Make crash/restart infrequent enough that the peers can often 
-        // keep up, but not so infrequent that everything has settled down
-        // from the change to the next.
-        // Pick a value smaller than the ELECTION_TIMEOUT, but not 
-        // hugely smaller.
-        tokio::time::sleep(ELECTION_TIMEOUT * 7 / 10).await;
-    }
+        flag.store(false, Ordering::Relaxed);
 
-    tokio::time::sleep(ELECTION_TIMEOUT).await;
-    tester.reliable(true).await;
+        let values = join_set.join_all().await
+            .into_iter()
+            .collect::<Result<Vec<Vec<u32>>, String>>()?
+            .into_iter()
+            .flat_map(|vals| vals.into_iter())
+            .collect::<Vec<_>>();
+        debug_assert!(Arc::strong_count(&safe_tester) == 1);
+        tester = match Arc::try_unwrap(safe_tester) {
+            Ok(m) => m.into_inner(),
+            Err(_) => panic!("safe_tester unwrap failed")
+        };
+        values
+    };
 
-    for i in 0..N {
-        tester.start_one(i, false, false).await?;
-        tester.connect(i).await;
-    }
-
-    flag.store(false, Ordering::Relaxed);
-
-    let values = join_set.join_all().await
-        .into_iter()
-        .collect::<Result<Vec<Vec<u32>>, String>>()?
-        .into_iter()
-        .flat_map(|vals| vals.into_iter())
-        .collect::<Vec<_>>();
 
     let last_index = tester.must_submit_cmd(&randu32(), N, true).await?;
     
