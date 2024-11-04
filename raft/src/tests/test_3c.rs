@@ -6,6 +6,9 @@ use std::{sync::{atomic::{AtomicBool, Ordering}, Arc}, time::Duration};
 
 use tokio::sync::Mutex;
 
+#[cfg(not(feature = "no_debug"))]
+use colored::Colorize;
+
 use super::{
     Tester, timeout_test, ELECTION_TIMEOUT, 
     utils::{gen_bool, randu32, randu64, randusize}
@@ -32,6 +35,7 @@ async fn test3c_persist1() {
 
         // crash and restart all
         for i in 0..N {
+            debug!("restart {i}");
             tester.start_one(i, false, true).await?;
         }
 

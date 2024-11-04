@@ -11,13 +11,14 @@ pub enum ApplyEntry {
 }
 
 pub struct Applier {
+    me: usize,
     apply_ch: UbTx<ApplyMsg>,
 }
 
 impl Applier {
-    pub fn new(apply_ch: UbTx<ApplyMsg>) -> Self {
+    pub fn new(me: usize, apply_ch: UbTx<ApplyMsg>) -> Self {
         Self {
-            apply_ch,
+            me, apply_ch
         }
     }
 
@@ -30,11 +31,19 @@ impl Applier {
                             command, index
                         };
                         if let Err(_) = self.apply_ch.send(apply_msg) {
-                            warn!("Apply channel is closed");
+                            warn!("{self}: Apply channel is closed");
+                            break;
                         }
                     }
                 }
             }
         }
+        rx.close();
+    }
+}
+
+impl std::fmt::Display for Applier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[Applier {}]", self.me)
     }
 }

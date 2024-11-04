@@ -101,7 +101,7 @@ impl RpcService {
         if let Err(_) = self.raft.ev_q.just_put(ev) {
             return Err(());
         }
-        Ok(rx.await.unwrap())
+        rx.await.map_err(|_| ())
     }
 
     /// Request a vote from this raft node.
@@ -114,7 +114,7 @@ impl RpcService {
         if let Err(_) = self.raft.ev_q.just_put(ev) {
             return Err(());
         }
-        Ok(rx.await.unwrap())
+        rx.await.map_err(|_| ())
     }
 
     pub async fn query_entry(&self, args: QueryEntryArgs) -> QueryEntryRes {
@@ -126,7 +126,7 @@ impl RpcService {
         if let Err(_) = self.raft.ev_q.just_put(ev) {
             return Err(());
         }
-        Ok(rx.await.unwrap())
+        rx.await.map_err(|_| ())
     }
 }
 

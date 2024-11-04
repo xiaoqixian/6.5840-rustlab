@@ -7,7 +7,7 @@ use std::ops::{RangeBounds, RangeInclusive};
 use applier::{Applier, ApplyEntry};
 use serde::{Deserialize, Serialize};
 
-use crate::{fatal, info, ApplyMsg, UbTx};
+use crate::{fatal, info, warn, ApplyMsg, UbTx};
 
 mod applier;
 
@@ -66,14 +66,38 @@ impl Logs {
         lai: Option<usize>
     ) -> Self {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        tokio::spawn(Applier::new(apply_tx).start(rx));
+        tokio::spawn(Applier::new(me, apply_tx).start(rx));
+
+        let LogsInfo { lci, logs, offset, cmd_cnt } = logs_info;
+
+        if let Some(range) = match lai {
+            Some(lai) if lai < cmd_cnt - 1 => {
+                let start = logs.iter().enumerate()
+                    .find_map(|(idx, et)| match et.log_type {
+                        LogType::Command {index, ..} if index == lai+1 => Some(idx),
+                        _ => None
+                    })
+                    .expect(&format!("Command with index {} \
+                            should exist in logs.", lai+1));
+                Some(start..logs.len())
+            },
+            _ => None
+        } {
+            let entries = logs.get(range).unwrap()
+                .into_iter().cloned()
+                .filter_map(LogEntry::into)
+                .collect();
+            if let Err(_) = tx.send(ApplyEntry::Entries { entries }) {
+                warn!("Applier channel should not be closed so soon");
+            }
+        }
 
         Self {
             me,
-            logs: logs_info.logs,
-            offset: logs_info.offset,
-            cmd_cnt: logs_info.cmd_cnt,
-            lci: logs_info.lci,
+            logs,
+            offset,
+            cmd_cnt,
+            lci,
             apply_tx: tx,
         }
     }
@@ -215,6 +239,12 @@ impl Logs {
 
         let lci = lci.min(self.logs.last().unwrap().index);
         let apply_range = (self.lci+1)..=lci;
+        self.lci = lci;
+
+        if self.apply_tx.is_closed() {
+            return
+        }
+
         let entries = match self.get_range(&apply_range) {
             None => fatal!("{self}: Invalid range {apply_range:?}, 
                 expected logs range {:?}", self.logs_range()),
@@ -222,12 +252,10 @@ impl Logs {
                 .filter_map(LogEntry::into)
                 .collect()
         };
-        
-        info!("{self}: apply logs range {apply_range:?}");
-        self.apply_tx.send(ApplyEntry::Entries { entries })
-            .expect("The apply channel is supposed to be open while 
-                the Logs is alive.");
-        self.lci = lci;
+
+        if let Ok(_) = self.apply_tx.send(ApplyEntry::Entries {entries}) {
+            info!("{self}: apply logs range {apply_range:?}");
+        }
     }
 
     pub fn logs_range(&self) -> RangeInclusive<usize> {

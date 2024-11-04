@@ -57,13 +57,13 @@ impl Leader {
             Event::UpdateCommit(lci) => {
                 info!("{self}: update commit to {lci}");
                 self.logs.update_commit(lci);
-                self.persist_state().await;
+                self.persist_state();
             },
 
             Event::StaleLeader {new_term} => {
                 self.core.term = new_term;
                 let _ = self.ev_q.put(TO_FOLLOWER);
-                self.persist_state().await;
+                self.persist_state();
             }
 
             ev => panic!("Unexpected event for a leader: {ev}")
@@ -79,7 +79,9 @@ impl Leader {
     async fn start_cmd(&self, cmd: Vec<u8>, reply_tx: OneTx<Option<(usize, usize)>>) {
         let term = self.core.term;
         let (idx, cmd_idx) = self.logs.push_cmd(term, cmd);
-        self.persist_state().await;
+        if !self.persist_state() {
+            return
+        }
         self.repl_counter.watch_idx(idx);
         if let Err(_) = reply_tx.send(Some((cmd_idx, term))) {
             warn!("start_cmd() reply failed");
@@ -100,7 +102,7 @@ impl Leader {
                 self.core.me, args.from, myterm);
         } else {
             self.core.term = args.term;
-            self.persist_state().await;
+            self.persist_state();
             let _ = self.ev_q.put(TO_FOLLOWER);
             EntryStatus::Hold
         };
@@ -132,7 +134,9 @@ impl Leader {
                 // than the candidate's.
                 VoteStatus::Rejected {term: myterm}
             };
-            self.persist_state().await;
+            if !self.persist_state() {
+                return
+            }
             status
         };
 
@@ -150,9 +154,9 @@ impl Leader {
         reply_tx.send(reply).unwrap();
     }
 
-    async fn persist_state(&self) {
+    fn persist_state(&self) -> bool {
         let state = bincode::serialize(self).unwrap();
-        self.core.persister.save(Some(state), None).await;
+        self.core.persister.save(Some(state), None)
     }
 }
 

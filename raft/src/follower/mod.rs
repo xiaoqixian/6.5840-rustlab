@@ -89,7 +89,9 @@ impl Follower {
                 }
             };
             self.logs.update_commit(args.lci);
-            self.persist_state().await;
+            if !self.persist_state() {
+                return
+            }
             entry_status
         };
         let reply = AppendEntriesReply {
@@ -121,7 +123,9 @@ impl Follower {
             } else {
                 VoteStatus::Rejected { term: myterm }
             };
-            self.persist_state().await;
+            if !self.persist_state() {
+                return
+            }
             vote
         };
 
@@ -139,9 +143,9 @@ impl Follower {
         reply_tx.send(reply).unwrap();
     }
 
-    async fn persist_state(&self) {
+    fn persist_state(&self) -> bool {
         let state = bincode::serialize(self).unwrap();
-        self.core.persister.save(Some(state), None);
+        self.core.persister.save(Some(state), None)
     }
 }
 

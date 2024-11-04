@@ -2,7 +2,7 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use std::{ops::Range, sync::{atomic::{AtomicBool, Ordering}, Arc}};
+use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
 
 use bit_vec::BitVec;
 

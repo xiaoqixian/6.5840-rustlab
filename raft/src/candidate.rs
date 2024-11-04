@@ -92,7 +92,7 @@ impl Candidate {
             Event::OutdateCandidate {new_term} => {
                 self.core.term = new_term;
                 let _ = self.ev_q.put(TO_FOLLOWER);
-                self.persist_state().await;
+                self.persist_state();
             },
             
             Event::ElectionTimeout => {
@@ -122,7 +122,7 @@ impl Candidate {
         let entry_status = if args.term >= myterm {
             self.core.term = args.term;
             let _ = self.ev_q.put(TO_FOLLOWER);
-            self.persist_state().await;
+            self.persist_state();
             EntryStatus::Hold
         } else {
             EntryStatus::Stale {
@@ -136,7 +136,7 @@ impl Candidate {
         reply_tx.send(reply).unwrap();
     }
 
-    /// When a candidate receivges a RequestVote request, it must come from 
+    /// When a candidate receives a RequestVote request, it must come from 
     /// its competitors. 
     /// If there is a competitor with a newer term, the 
     /// candidate fallback to be a follower, but should it vote for the 
@@ -174,15 +174,22 @@ impl Candidate {
                     VoteStatus::Granted
                 } else {
                     {
-                        let my_last = self.logs.last_log_info();
-                        info!("Reject {} for stale logs, my last = {}, its last = {}", args.from, my_last, args.last_log);
+                        info!("Reject {} for stale logs, my last = {}, \
+                            its last = {}", 
+                            args.from, 
+                            self.logs.last_log_info(), 
+                            args.last_log);
                         
                     }
                     VoteStatus::Rejected {
                         term: myterm
                     }
                 };
-                self.persist_state().await;
+                // if persistence failed, discard the vote, let the 
+                // requester timeout.
+                if !self.persist_state() {
+                    return;
+                }
                 vote
             }
         };
@@ -214,9 +221,9 @@ impl Candidate {
         }
     }
 
-    async fn persist_state(&self) {
+    fn persist_state(&self) -> bool {
         let state = bincode::serialize(self).unwrap();
-        self.core.persister.save(Some(state), None).await;
+        self.core.persister.save(Some(state), None)
     }
 }
 
@@ -254,8 +261,7 @@ impl Poll {
     }
 
     async fn check_vote(&self, reply: RequestVoteReply) {
-        let voter = reply.voter;
-        info!("{self} vote reply from {voter}, vote {}", reply.vote);
+        info!("{self} vote reply from {}, vote {}", reply.voter, reply.vote);
         match reply.vote {
             VoteStatus::Granted => {
                 let _ = self.ev_q.put(Event::GrantVote {

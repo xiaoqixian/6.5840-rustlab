@@ -512,9 +512,39 @@ impl<T> Tester<T>
 impl<T> Applier<T> 
     where T: WantedCmd
 {
-    async fn run(mut self, snap: bool) {
-        while let Some(msg) = self.apply_ch.recv().await {
-            let mut logs = self.logs.lock().await;
+    async fn check_alive(killed: Arc<AtomicBool>) {
+        while killed.load(Ordering::Relaxed) {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    async fn run(self, snap: bool) {
+        let Self {
+            id,
+            killed,
+            logs,
+            mut apply_ch,
+        } = self;
+        
+        loop {
+            let msg = tokio::select! {
+                biased;
+                msg = apply_ch.recv() => match msg {
+                    None => break,
+                    Some(msg) => Some(msg)
+                },
+                _ = Self::check_alive(killed.clone()) => {
+                    apply_ch.close();
+                    None
+                }
+            };
+
+            let msg = match msg {
+                None => continue,
+                Some(msg) => msg
+            };
+
+            let mut logs = logs.lock().await;
             let failed = match msg {
                 ApplyMsg::Command {index, command} => {
                     Self::check_logs(self.id, index, command, 
@@ -522,18 +552,14 @@ impl<T> Applier<T>
                 },
                 ApplyMsg::Snapshot {..} if snap => false,
                 _ => {
-                    logs.apply_err[self.id] = 
+                    logs.apply_err[id] = 
                         Some("Snapshot unexpected".to_string());
                     true
                 }
             };
             if failed {
-                self.apply_ch.close();
+                apply_ch.close();
                 break;
-            }
-
-            if self.killed.load(Ordering::Relaxed) {
-                self.apply_ch.close();
             }
         }
     }

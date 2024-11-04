@@ -53,7 +53,8 @@ macro_rules! warn {
         #[cfg(debug_assertions)]
         {
             use colored::Colorize;
-            let msg = format!($($args),*).truecolor(255,175,0);
+            let msg = format!("[WARN] {}", 
+                format_args!($($args),*)).truecolor(255,175,0);
             eprintln!("{msg}");
             // crate::log!((255,175,0), $($args),*)
         }

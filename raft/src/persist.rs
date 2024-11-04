@@ -63,7 +63,9 @@ impl Persister {
 
 impl PersisterManager {
     pub fn new() -> Self {
-        Default::default()
+        Self {
+            storage: Arc::new(Mutex::new(Some(Storage::default())))
+        }
     }
 
     pub fn lock(&mut self) {
