@@ -12,23 +12,17 @@ use crate::{
     follower::Follower, 
     info, 
     logs::Logs, 
-    persist::{PersistStateDes, Persister}, 
+    persist::{Persister, RaftState}, 
     role::{Role, RoleCore, RoleEvQueue}, 
     service::RpcService, 
     ApplyMsg, UbRx, UbTx
 };
 
-#[derive(Serialize)]
 pub(crate) struct RaftCore {
-    #[serde(skip)]
     pub me: usize,
-    #[serde(skip)]
     pub rpc_client: Client,
-    // pub persister: Arc<Mutex<RaftPersister>>,
-    #[serde(skip)]
     pub persister: Persister,
     pub term: usize,
-    // ev_q is shared
     pub vote_for: Option<usize>
 }
 
@@ -37,7 +31,7 @@ pub(crate) struct RaftHandle {
     pub ev_q: Arc<EvQueue>,
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default, Deserialize)]
 pub struct RaftInfo {
     term: usize,
     vote_for: Option<usize>
@@ -78,34 +72,40 @@ impl Raft {
     /// * `lai` - last applied command index, the Applier promises that 
     /// all commands that are sent through `apply_ch` successfully will 
     /// be applied, 
+    /// * `raft_state` - 
     pub async fn new(
         rpc_client: Client, 
         me: usize, 
         persister: Persister, 
         apply_ch: UbTx<ApplyMsg>,
-        lai: Option<usize>
+        lai: Option<usize>,
+        raft_state: Option<Vec<u8>>,
+        _snapshot: Option<Vec<u8>>
     ) -> Self {
         let (ev_ch_tx, ev_ch_rx) = tokio::sync::mpsc::unbounded_channel();
         let ev_q = Arc::new(EvQueue::new(ev_ch_tx, me));
 
-        let state: PersistStateDes = match persister.raft_state() {
-            Some(bin) => bincode::deserialize_from(&bin[..]).unwrap(),
-            None => Default::default()
+        let state: RaftState = match raft_state {
+            None => Default::default(),
+            Some(s) => bincode::deserialize_from(&s[..]).unwrap()
         };
+        let RaftState {
+            raft_info, logs_info
+        } = state;
 
         let core = RaftCore {
             me,
             rpc_client,
             persister,
-            term: state.raft_info.term,
-            vote_for: state.raft_info.vote_for
+            term: raft_info.term,
+            vote_for: raft_info.vote_for
         };
 
         let handle = RaftHandle {
             ev_q: ev_q.clone(),
         };
 
-        let logs = Logs::new(me, apply_ch, state.logs_info, lai);
+        let logs = Logs::new(me, apply_ch, logs_info, lai);
 
         core.rpc_client.add_service("RpcService".to_string(), 
             Box::new(RpcService::new(handle))).await;
@@ -169,6 +169,11 @@ impl Raft {
     }
 
     /// Kill the server.
+    /// 
+    /// As for Test 3C, you should not persist your state only when killed.
+    /// As the tester may lock the persister, and you will fail to persist 
+    /// your state.
+    /// Always persist immediatelly after essential raft state changed.
     pub async fn kill(self) {
         self.ev_q.just_put(Event::Kill)
             .expect("Kill ev should not be rejected");
@@ -209,3 +214,14 @@ impl From<&RaftCore> for RaftInfo {
     }
 }
 
+impl Serialize for RaftCore {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer {
+        use serde::ser::SerializeStruct;
+        let mut s = serializer.serialize_struct("RaftInfo", 2)?;
+        s.serialize_field("term", &self.term)?;
+        s.serialize_field("vote_for", &self.vote_for)?;
+        s.end()
+    }
+}

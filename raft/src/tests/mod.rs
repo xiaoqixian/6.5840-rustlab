@@ -18,7 +18,9 @@ use std::{collections::HashMap, fmt::{Debug, Display}, future::Future, ops::Dere
 use labrpc::network::Network;
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::{sync::Mutex, task::JoinHandle};
-use crate::{ApplyMsg, persist::PersisterManager, raft::Raft, UbRx};
+use crate::{
+    persist::{make_persister, Persister}, raft::Raft, ApplyMsg, UbRx
+};
 use colored::Colorize;
 
 macro_rules! greet {
@@ -51,7 +53,9 @@ struct NodeCore {
 
 struct Node {
     id: usize,
-    persister: PersisterManager,
+    persister: Persister,
+    raft_state: Option<Vec<u8>>,
+    snapshot: Option<Vec<u8>>,
     core: Option<NodeCore>,
     connected: bool,
     last_applied: Option<usize>
@@ -102,7 +106,9 @@ impl<T> Tester<T>
             nodes: (0..n).into_iter()
                 .map(|id| Node {
                     id,
-                    persister: PersisterManager::new(),
+                    persister: Persister::new(),
+                    raft_state: None,
+                    snapshot: None,
                     core: None,
                     connected: true,
                     last_applied: None
@@ -146,7 +152,14 @@ impl<T> Tester<T>
     async fn crash_node(&mut self, id: usize) -> Result<(), String> {
         let node = &mut self.nodes[id];
         if let Some(core) = node.core.take() {
-            node.persister.lock();
+            // replace the original persister with the new created one, 
+            // this operation makes the old one unavailable.
+            let (new_persister, raft_state, snapshot) = 
+                make_persister(node.persister.clone())?;
+            node.persister = new_persister;
+            node.raft_state = raft_state;
+            node.snapshot = snapshot;
+            
             core.applier_killed.store(true, Ordering::Relaxed);
             if let Err(_) = tokio::time::timeout(Duration::from_secs(1), 
                 core.applier_handle).await 
@@ -175,14 +188,15 @@ impl<T> Tester<T>
             self.crash_node(id).await?;
         }
 
-        if let Some(snapshot) = self.nodes[id].persister.snapshot() {
-            self.ingest_snapshot(id, snapshot, None).await;
-        }
+        // TODO: ingest_snapshot
+        // if let Some(snapshot) = self.nodes[id].persister.snapshot() {
+        //     self.ingest_snapshot(id, snapshot, None).await;
+        // }
 
         let node = &mut self.nodes[id];
 
         let client= self.net.make_client(id).await;
-        let persister = node.persister.make_new();
+        let persister = node.persister.clone();
         let lai = {
             let len = self.logs.lock().await.logs.get(id).unwrap().len();
             if len == 0 { None }
@@ -192,7 +206,7 @@ impl<T> Tester<T>
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let raft = match tokio::time::timeout(
             Duration::from_secs(1),
-            Raft::new(client, id, persister, tx, lai)
+            Raft::new(client, id, persister, tx, lai, node.raft_state.take(), node.snapshot.take())
         ).await {
             Ok(raft) => raft,
             Err(_) => return Err(format!("Raft instantiation timeout, expect no more than 1sec"))
@@ -513,7 +527,7 @@ impl<T> Applier<T>
     where T: WantedCmd
 {
     async fn check_alive(killed: Arc<AtomicBool>) {
-        while killed.load(Ordering::Relaxed) {
+        while !killed.load(Ordering::Relaxed) {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
@@ -525,7 +539,7 @@ impl<T> Applier<T>
             logs,
             mut apply_ch,
         } = self;
-        
+
         loop {
             let msg = tokio::select! {
                 biased;

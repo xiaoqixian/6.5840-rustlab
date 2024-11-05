@@ -7,7 +7,7 @@ use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
 use labrpc::{client::ClientEnd, err::{DISCONNECTED, TIMEOUT}};
 use serde::{Deserialize, Serialize};
 
-use crate::{common, event::{Event, TO_FOLLOWER, TO_LEADER}, logs::Logs, raft::RaftCore, role::{RoleCore, RoleEvQueue, Trans}, service::{AppendEntriesArgs, AppendEntriesReply, EntryStatus, QueryEntryArgs, QueryEntryReply, RequestVoteArgs, RequestVoteReply, RequestVoteRes}, OneTx};
+use crate::{common, event::{Event, TO_FOLLOWER, TO_LEADER}, logs::Logs, raft::{RaftCore, RaftInfo}, role::{RoleCore, RoleEvQueue, Trans}, service::{AppendEntriesArgs, AppendEntriesReply, EntryStatus, QueryEntryArgs, QueryEntryReply, RequestVoteArgs, RequestVoteReply, RequestVoteRes}, OneTx};
 use crate::info;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -38,19 +38,13 @@ struct Poll {
 /// When it crashes and restarts, it lost all its votes, 
 /// which is fine, it starts as a follower, and followers who 
 /// vote for it can keep working.
-#[derive(Serialize)]
 pub struct Candidate {
     core: RaftCore,
     logs: Logs,
-    #[serde(skip)]
     ev_q: RoleEvQueue,
-    #[serde(skip)]
     active: Arc<AtomicBool>,
-    #[serde(skip)]
     voters: Vec<bool>,
-    #[serde(skip)]
     votes: usize,
-    #[serde(skip)]
     n: usize
 }
 
@@ -223,7 +217,7 @@ impl Candidate {
 
     fn persist_state(&self) -> bool {
         let state = bincode::serialize(self).unwrap();
-        self.core.persister.save(Some(state), None)
+        self.core.persister.save(Some(state), None, false)
     }
 }
 
@@ -364,5 +358,17 @@ impl std::fmt::Display for VoteStatus {
             Self::Denied { term } => write!(f, "Denied {{term = {term}}}"),
             Self::Rejected { term } => write!(f, "Rejected {{term = {term}}}"),
         }
+    }
+}
+
+impl Serialize for Candidate {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer {
+        use serde::ser::SerializeStruct;
+        let mut s = serializer.serialize_struct("RaftState", 2)?;
+        s.serialize_field("raft_info", &self.core)?;
+        s.serialize_field("logs_info", &self.logs)?;
+        s.end()
     }
 }

@@ -37,15 +37,12 @@ pub struct LogEntry {
     pub log_type: LogType
 }
 
-#[derive(Serialize)]
 pub struct Logs {
-    #[serde(skip)]
     me: usize,
     logs: Vec<LogEntry>,
     offset: usize,
     cmd_cnt: usize,
     lci: usize,
-    #[serde(skip)]
     apply_tx: UbTx<ApplyEntry>,
 }
 
@@ -328,5 +325,19 @@ impl std::default::Default for LogsInfo {
             cmd_cnt: 0,
             lci: 0
         }
+    }
+}
+
+impl Serialize for Logs {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer {
+        use serde::ser::SerializeStruct;
+        let mut s = serializer.serialize_struct("LogsInfo", 4)?;
+        s.serialize_field("offset", &self.offset)?;
+        s.serialize_field("lci", &self.lci)?;
+        s.serialize_field("cmd_cnt", &self.cmd_cnt)?;
+        s.serialize_field("logs", &self.logs)?;
+        s.end()
     }
 }
