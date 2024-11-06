@@ -225,6 +225,11 @@ impl<T> Tester<T>
             applier_handle,
             applier_killed
         });
+
+        if !node.connected {
+            node.connected = true;
+            self.net.connect(id, true).await;
+        }
         
         Ok(true)
     }
@@ -272,23 +277,6 @@ impl<T> Tester<T>
             }
         }
         Err(format!("Expect one leader, got none"))
-    }
-
-    /// Iterate all nodes, ask each one to start a command, 
-    /// if success, return its id, the command index and term.
-    async fn let_one_start_by<F>(&self, f: F) -> Option<(usize, (usize, usize))> 
-        where F: Fn(usize) -> T
-    {
-        for (id, raft) in self.nodes.iter().enumerate()
-            .filter_map(|(id, node)| 
-                node.core.as_ref().map(|core| (id, &core.raft)))
-        {
-            let cmd = bincode::serialize(&f(id)).unwrap();
-            if let Some(cmd_info) = raft.start(cmd).await {
-                return Some((id, cmd_info));
-            }
-        }
-        None
     }
 
     /// Let a specific node start
@@ -481,14 +469,10 @@ impl<T> Tester<T>
 
         let (n, cmd) = self.n_committed(index).await?;
         if n < expect {
-            return Err(format!("Only {n} nodes committed command with 
-                    index {index}, expected {expect}"));
+            return Err(format!("Only {n} nodes committed command with \
+                    index {index}, expect {expect} nodes committed"));
         }
         Ok(cmd)
-    }
-
-    async fn ingest_snapshot(&self, _id: usize, _snapshot: Vec<u8>, _index: Option<usize>) {
-
     }
 
     async fn enable(&mut self, id: usize, enable: bool) {
@@ -585,7 +569,6 @@ impl<T> Applier<T>
                 Ok(())
             },
             Err(msg) => {
-                debug_assert!(logs.apply_err[id].is_none());
                 logs.apply_err[id] = Some(msg);
                 Err(())
             }
@@ -594,7 +577,6 @@ impl<T> Applier<T>
 
     /// Check applied commands index and term consistency,
     /// if ok, insert this command into logs.
-    /// WARN: check_logs assume the Config.lock is hold by the caller.
     fn cross_check(id: usize, cmd_idx: usize, cmd: Vec<u8>,
         logs: &mut Vec<Vec<T>>) -> Result<(), String> {
         let cmd_value = bincode::deserialize_from::<_, T>(&cmd[..])

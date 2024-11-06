@@ -15,6 +15,12 @@ use super::{
 };
 
 macro_rules! debug {
+    (no_label, $($args: expr), *) => {
+        #[cfg(not(feature = "no_test_debug"))]
+        {
+            println!($($args), *);
+        }
+    };
     ($($args: expr),*) => {
         #[cfg(not(feature = "no_test_debug"))]
         {
@@ -53,7 +59,7 @@ async fn test3c_persist1() {
         debug!("restarted leader2 {leader2}");
 
         // wait for leader2 to join
-        tester.wait(starti+4, N, None).await?;
+        tester.wait(starti+3, N, None).await?;
         
         let leader3 = tester.check_one_leader().await?;
         let i3 = (leader3 + 1) % N;
@@ -127,18 +133,24 @@ async fn test3c_persist3() {
 
         let leader = tester.check_one_leader().await?;
         tester.disconnect((leader + 2) % N).await;
+        debug!("disconnect {}", (leader + 2) % N);
 
         tester.must_submit_cmd(&102, N-1, true).await?;
         
         tester.crash_one(leader).await?;
+        debug!("crash {leader}");
         tester.crash_one((leader + 1) % N).await?;
+        debug!("crash {}", (leader + 1) % N);
         tester.connect((leader + 2) % N).await;
+        debug!("connect {}", (leader + 2) % N);
 
         tester.start_one(leader, false, true).await?;
+        debug!("restart {leader}");
 
         tester.must_submit_cmd(&103, N-1, true).await?;
 
         tester.start_one((leader + 1) % N, false, true).await?;
+        debug!("restart {}", (leader + 1) % N);
         
         tester.must_submit_cmd(&104, N, true).await?;
 
@@ -260,18 +272,47 @@ async fn test3c_figure8_unreliable() {
         let mut tester = Tester::<u32>::new(N, false, false).await?;
         tester.begin("Test 3C: figure 8 unreliable").await;
 
-        let gen = |_: usize| randu32() % 10000;
-
-        tester.submit_cmd(&(randu32() % 10000), 1, true).await?;
+        let cmd1 = randu32() % 10000;
+        tester.submit_cmd(&cmd1, 1, true).await?;
+        debug!("submmit command {cmd1}");
 
         let mut awake = N;
         for i in 0..1000 {
-            if i == 200 {
-                tester.long_reordering(true).await;
+            #[cfg(not(feature = "no_test_debug"))]
+            {
+            let alive_nodes = (0..N).into_iter()
+                .filter(|&id| tester.nodes[id].connected)
+                .collect::<Vec<_>>();
+            println!("\n--------- i = {i}, awake = {alive_nodes:?} ------------")
             }
 
-            let leader = tester.let_one_start_by(gen).await
-                .map(|(id, _)| id);
+            if i == 200 {
+                tester.long_reordering(true).await;
+                debug!("set network long reordering");
+            }
+
+            // let all leaders(there may be multiple leaders) start a random 
+            // command.
+            // remember the index of the connected leader id.
+            let leader = {
+                let mut leader = None;
+                for node in tester.nodes.iter()
+                {
+                    let core = match node.core.as_ref() {
+                        None => continue,
+                        Some(c) => c
+                    };
+
+                    let cmd = randu32() % 10000;
+                    let cmd = bincode::serialize(&cmd).unwrap();
+                    let cmd_info = core.raft.start(cmd).await;
+                    if let (true, true) = (cmd_info.is_some(), node.connected) {
+                        leader = Some(node.id);
+                    }
+                }
+                leader
+            };
+            debug!("leader = {leader:?}");
             
             let ms = if gen_bool(0.1) {
                 randu64() % (ELECTION_TIMEOUT.as_millis() as u64 / 2)
@@ -280,9 +321,10 @@ async fn test3c_figure8_unreliable() {
             };
             tokio::time::sleep(Duration::from_millis(ms)).await;
 
-            let disconn = randu64() % 1000 < ELECTION_TIMEOUT.as_millis() as u64 / 2;
+            let disconn = (randu64() % 1000) < (ELECTION_TIMEOUT.as_millis() as u64 / 2);
             if let (Some(leader), true) = (leader, disconn) {
                 tester.disconnect(leader).await;
+                debug!("disconnect leader {leader}");
                 awake -= 1;
             }
 
@@ -290,6 +332,7 @@ async fn test3c_figure8_unreliable() {
                 let wake = randusize() % N;
                 if !tester.connected(wake).await {
                     tester.connect(wake).await;
+                    debug!("reconnect {wake}");
                     awake += 1;
                 }
             }
@@ -298,8 +341,11 @@ async fn test3c_figure8_unreliable() {
         for i in 0..N {
             tester.connect(i).await;
         }
+        debug!("connect all");
 
-        tester.must_submit_cmd(&(randu32() % 10000), N, true).await?;
+        let cmd2 = randu32() % 10000;
+        debug!("All must commit cmd2 {cmd2}");;
+        tester.must_submit_cmd(&cmd2, N, true).await?;
         tester.end().await
     }
     timeout_test(figure8_unreliable()).await;
