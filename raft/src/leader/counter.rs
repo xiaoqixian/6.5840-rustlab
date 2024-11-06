@@ -34,7 +34,6 @@ pub struct ReplCounter {
 
 impl ReplCounter {
     pub fn new(me: usize, n: usize, lci: usize, ev_q: RoleEvQueue, active: Arc<AtomicBool>) -> Self {
-        debug!("New ReplCounter {me}, lci = {lci}");
         let counter = CounterImpl {
             me,
             n,
@@ -59,7 +58,7 @@ impl ReplCounter {
     }
 
     pub fn confirm(&self, peer_id: usize, index: usize) {
-        debug!("{self}: {peer_id} confirmed until {index}");
+        info!("{self}: {peer_id} confirmed until {index}");
         let ev = ReplCounterEv::Confirm { peer_id, index };
         if let Err(_) = self.tx.send(ev) {
             warn!("{self}: channel closed");

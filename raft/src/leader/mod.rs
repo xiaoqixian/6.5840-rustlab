@@ -3,9 +3,19 @@
 // Author: https://github.com/xiaoqixian
 
 use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
-use serde::Serialize;
+use labrpc::debug;
+use serde::{Serialize, ser::SerializeStruct};
 
-use crate::{candidate::VoteStatus, event::{Event, TO_FOLLOWER}, info, raft::RaftCore, role::{RoleCore, RoleEvQueue, Trans}, service::{AppendEntriesArgs, AppendEntriesReply, EntryStatus, QueryEntryArgs, QueryEntryReply, RequestVoteArgs, RequestVoteReply}, utils::Peer, warn, OneTx};
+use crate::{
+    candidate::VoteStatus, event::{Event, TO_FOLLOWER}, info, raft::RaftCore, role::{RoleCore, RoleEvQueue, Trans}, service::{
+        AppendEntriesArgs,
+        AppendEntriesReply,
+        EntryStatus,
+        QueryEntryArgs,
+        QueryEntryReply,
+        RequestVoteArgs,
+        RequestVoteReply
+    }, utils::Peer, warn, OneTx};
 
 mod replicator;
 mod counter;
@@ -14,15 +24,11 @@ use counter::ReplCounter;
 use ldlogs::{LdLogs, ReplLogs};
 use replicator::Replicator;
 
-#[derive(Serialize)]
 pub struct Leader {
     core: RaftCore,
     logs: LdLogs,
-    #[serde(skip)]
     ev_q: RoleEvQueue,
-    #[serde(skip)]
     active: Arc<AtomicBool>,
-    #[serde(skip)]
     repl_counter: ReplCounter,
 }
 
@@ -79,6 +85,7 @@ impl Leader {
     async fn start_cmd(&self, cmd: Vec<u8>, reply_tx: OneTx<Option<(usize, usize)>>) {
         let term = self.core.term;
         let (idx, cmd_idx) = self.logs.push_cmd(term, cmd);
+        debug!("{self}: start a command, index = {idx}, command index = {cmd_idx}");
         if !self.persist_state() {
             return
         }
@@ -119,6 +126,7 @@ impl Leader {
         let myterm = self.core.term;
         
         let vote = if args.term <= myterm {
+            debug!("{self}: denied vote from ({}, {}), I'm the real leader.", args.from, args.term);
             VoteStatus::Denied { term: myterm }
         } else {
             self.core.term = args.term;
@@ -126,15 +134,18 @@ impl Leader {
             
             let status = if self.logs.up_to_date(&args.last_log) {
                 self.core.vote_for = Some(args.from);
+                debug!("{self}: grant vote to {}", args.from);
                 VoteStatus::Granted
             } else {
                 // even myterm here is outdated, it makes no difference
                 // to the remote candidate, the candidate will not quit 
                 // election as long as the Reject.term is not greater 
                 // than the candidate's.
+                debug!("{self}: reject vote from {} for not up_to_date logs.", args.from);
                 VoteStatus::Rejected {term: myterm}
             };
             if !self.persist_state() {
+                warn!("{self}: the persister is down, exit!");
                 return
             }
             status
@@ -156,7 +167,7 @@ impl Leader {
 
     fn persist_state(&self) -> bool {
         let state = bincode::serialize(self).unwrap();
-        self.core.persister.save(Some(state), None)
+        self.core.persister.save(Some(state), None, false)
     }
 }
 
@@ -168,7 +179,7 @@ impl From<RoleCore> for Leader {
             ev_q
         } = role_core;
 
-        info!("{core} become a leader");
+        debug!("{core} become a leader");
 
         // when a node become a leader, it pushes a noop log to its logs,
         // this will be the first log entry in its reign.
@@ -227,9 +238,19 @@ impl Into<RoleCore> for Leader {
     }
 }
 
-#[cfg(not(feature = "no_debug"))]
 impl std::fmt::Display for Leader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Leader[{}, term={}]", self.core.me, self.core.term)
+    }
+}
+
+impl Serialize for Leader {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer {
+        let mut s = serializer.serialize_struct("RaftState", 2)?;
+        s.serialize_field("raft_info", &self.core)?;
+        s.serialize_field("logs_info", &self.logs)?;
+        s.end()
     }
 }

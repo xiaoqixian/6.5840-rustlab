@@ -5,20 +5,17 @@
 use std::time::Duration;
 
 use crate::{
-    candidate::VoteStatus, common, event::{Event, TO_CANDIDATE}, info, logs::Logs, raft::RaftCore, role::{RoleCore, RoleEvQueue, Trans}, service::{AppendEntriesArgs, AppendEntriesReply, AppendEntriesType, EntryStatus, QueryEntryArgs, QueryEntryReply, RequestVoteArgs, RequestVoteReply}, OneTx
+    candidate::VoteStatus, common, debug, event::{Event, TO_CANDIDATE}, info, logs::Logs, raft::RaftCore, role::{RoleCore, RoleEvQueue, Trans}, service::{AppendEntriesArgs, AppendEntriesReply, AppendEntriesType, EntryStatus, QueryEntryArgs, QueryEntryReply, RequestVoteArgs, RequestVoteReply}, OneTx
 };
 
 mod timer;
-use serde::Serialize;
+use serde::{Serialize, ser::SerializeStruct};
 use timer::Timer;
 
-#[derive(Serialize)]
 pub struct Follower {
     core: RaftCore,
     logs: Logs,
-    #[serde(skip)]
     ev_q: RoleEvQueue,
-    #[serde(skip)]
     hb_timer: Timer
 }
 
@@ -42,7 +39,7 @@ impl Follower {
                 self.append_entries(args, reply_tx).await;
             },
             Event::RequestVote {args, reply_tx} => {
-                info!("{self}: {}", args);
+                debug!("{self}: {}", args);
                 self.request_vote(args, reply_tx).await;
             },
             Event::QueryEntry {args, reply_tx} => {
@@ -52,7 +49,7 @@ impl Follower {
 
             // follower related events
             Event::HeartBeatTimeout => {
-                info!("{}: HeartBeatTimeout", self);
+                debug!("{self}: HeartBeatTimeout");
                 let _ = self.ev_q.put(TO_CANDIDATE);
             }
 
@@ -119,8 +116,10 @@ impl Follower {
             let vote = if self.logs.up_to_date(&args.last_log) {
                 self.core.vote_for = Some(args.from);
                 self.hb_timer.reset();
+                debug!("{self}: grant vote to {}", args.from);
                 VoteStatus::Granted
             } else {
+                debug!("{self}: reject vote from {} for not up-to-date logs", args.from);
                 VoteStatus::Rejected { term: myterm }
             };
             if !self.persist_state() {
@@ -145,7 +144,7 @@ impl Follower {
 
     fn persist_state(&self) -> bool {
         let state = bincode::serialize(self).unwrap();
-        self.core.persister.save(Some(state), None)
+        self.core.persister.save(Some(state), None, false)
     }
 }
 
@@ -188,5 +187,16 @@ impl Into<RoleCore> for Follower {
 impl std::fmt::Display for Follower {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Follower[{}, term={}]", self.core.me, self.core.term)
+    }
+}
+
+impl Serialize for Follower {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer {
+        let mut s = serializer.serialize_struct("RaftState", 2)?;
+        s.serialize_field("raft_info", &self.core)?;
+        s.serialize_field("logs_info", &self.logs)?;
+        s.end()
     }
 }

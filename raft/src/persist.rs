@@ -76,7 +76,7 @@ pub fn make_persister(persister: Persister)
     Ok((new, raft_state, snapshot))
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct RaftState {
     pub raft_info: RaftInfo,
     pub logs_info: LogsInfo

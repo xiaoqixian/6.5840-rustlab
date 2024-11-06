@@ -328,6 +328,24 @@ impl std::default::Default for LogsInfo {
     }
 }
 
+impl std::fmt::Debug for LogsInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, 
+r"LogsInfo {{
+    offset: {},
+    lci: {},
+    cmd_cnt: {},
+    logs: [{}..={}]
+}}", 
+            self.offset,
+            self.lci,
+            self.cmd_cnt,
+            self.logs.first().unwrap().index,
+            self.logs.last().unwrap().index
+        )
+    }
+}
+
 impl Serialize for Logs {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
         where

@@ -8,14 +8,7 @@ use labrpc::client::Client;
 use serde::{Serialize, Deserialize};
 
 use crate::{
-    event::{EvQueue, Event}, 
-    follower::Follower, 
-    info, 
-    logs::Logs, 
-    persist::{Persister, RaftState}, 
-    role::{Role, RoleCore, RoleEvQueue}, 
-    service::RpcService, 
-    ApplyMsg, UbRx, UbTx
+    debug, event::{EvQueue, Event}, follower::Follower, info, logs::Logs, persist::{Persister, RaftState}, role::{Role, RoleCore, RoleEvQueue}, service::RpcService, ApplyMsg, UbRx, UbTx
 };
 
 pub(crate) struct RaftCore {
@@ -31,7 +24,7 @@ pub(crate) struct RaftHandle {
     pub ev_q: Arc<EvQueue>,
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct RaftInfo {
     term: usize,
     vote_for: Option<usize>
@@ -89,6 +82,7 @@ impl Raft {
             None => Default::default(),
             Some(s) => bincode::deserialize_from(&s[..]).unwrap()
         };
+        debug!("Raft {me} init from state \n{state:?}");
         let RaftState {
             raft_info, logs_info
         } = state;

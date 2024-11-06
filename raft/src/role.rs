@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use crate::debug;
 use crate::event::{EvQueue, Event};
 use crate::follower::Follower;
 use crate::candidate::Candidate;
@@ -97,16 +98,24 @@ impl Role {
             // they need to become a follower.
             *self = match (role, trans) {
                 (Self::Follower(flw), Trans::ToCandidate) => {
-                    Self::Candidate(Candidate::from(flw.stop()))
+                    let core = flw.stop();
+                    // debug!("[Raft {}]: be candidate", core.raft_core.me);
+                    Self::Candidate(Candidate::from(core))
                 },
                 (Self::Candidate(cd), Trans::ToLeader) => {
-                    Self::Leader(Leader::from(cd.stop()))
+                    let core = cd.stop();
+                    // debug!("[Raft {}]: be leader", core.raft_core.me);
+                    Self::Leader(Leader::from(core))
                 },
                 (Self::Candidate(cd), Trans::ToFollower) => {
-                    Self::Follower(Follower::from(cd.stop()))
+                    let core = cd.stop();
+                    // debug!("[Raft {}]: candidate to follower", core.raft_core.me);
+                    Self::Follower(Follower::from(core))
                 },
                 (Self::Leader(ld), Trans::ToFollower) => {
-                    Self::Follower(Follower::from(ld.stop()))
+                    let core = ld.stop();
+                    // debug!("[Raft {}]: leader to follower", core.raft_core.me);
+                    Self::Follower(Follower::from(core))
                 },
                 (r, t) => panic!("Unexpected combination of 
                     transformation {t:?} and role {r}.")

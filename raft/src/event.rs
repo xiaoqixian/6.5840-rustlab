@@ -92,7 +92,7 @@ impl EvQueue {
                 if self.key() != key {
                     Err(ev)
                 } else {
-                    ev_ch.send(ev).unwrap();
+                    ev_ch.send(ev).map_err(|e| e.0)?;
                     self.key.fetch_add(1, Ordering::SeqCst);
                     Ok(())
                 }
@@ -102,8 +102,7 @@ impl EvQueue {
                 if self.key() != key {
                     Err(ev)
                 } else {
-                    ev_ch.send(ev).unwrap();
-                    Ok(())
+                    ev_ch.send(ev).map_err(|e| e.0)
                 }
             }
         }

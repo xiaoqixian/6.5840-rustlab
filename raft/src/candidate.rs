@@ -2,12 +2,12 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
+use std::{sync::{atomic::{AtomicBool, Ordering}, Arc}, time::Duration};
 
 use labrpc::{client::ClientEnd, err::{DISCONNECTED, TIMEOUT}};
 use serde::{Deserialize, Serialize};
 
-use crate::{common, event::{Event, TO_FOLLOWER, TO_LEADER}, logs::Logs, raft::{RaftCore, RaftInfo}, role::{RoleCore, RoleEvQueue, Trans}, service::{AppendEntriesArgs, AppendEntriesReply, EntryStatus, QueryEntryArgs, QueryEntryReply, RequestVoteArgs, RequestVoteReply, RequestVoteRes}, OneTx};
+use crate::{common, debug, event::{Event, TO_FOLLOWER, TO_LEADER}, logs::Logs, raft::{RaftCore, RaftInfo}, role::{RoleCore, RoleEvQueue, Trans}, service::{AppendEntriesArgs, AppendEntriesReply, EntryStatus, QueryEntryArgs, QueryEntryReply, RequestVoteArgs, RequestVoteReply, RequestVoteRes}, OneTx};
 use crate::info;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -70,7 +70,7 @@ impl Candidate {
                 self.append_entries(args, reply_tx).await;
             },
             Event::RequestVote {args, reply_tx} => {
-                info!("{self}: RequestVote from {}, term={}", args.from, args.term);
+                debug!("{self}: RequestVote from {}, term={}", args.from, args.term);
                 self.request_vote(args, reply_tx).await;
             },
             Event::QueryEntry {args, reply_tx} => {
@@ -150,6 +150,7 @@ impl Candidate {
         use std::cmp;
         let vote = match myterm.cmp(&args.term) {
             cmp::Ordering::Greater => {
+                debug!("{self}: reject vote from {} for stale term {}", args.from, args.term);
                 VoteStatus::Rejected { term: myterm }
             },
             cmp::Ordering::Equal => {
@@ -165,10 +166,11 @@ impl Candidate {
 
                 let vote = if up_to_date {
                     self.core.vote_for = Some(args.from);
+                    debug!("{self}: grant vote to {}", args.from);
                     VoteStatus::Granted
                 } else {
                     {
-                        info!("Reject {} for stale logs, my last = {}, \
+                        debug!("Reject {} for stale logs, my last = {}, \
                             its last = {}", 
                             args.from, 
                             self.logs.last_log_info(), 
@@ -228,10 +230,17 @@ impl Poll {
         let mut tries = 0usize;
 
         let ret = loop {
-            let ret = peer.call::<_, RequestVoteRes>(
+            let req_vote = peer.call::<_, RequestVoteRes>(
                 crate::common::REQUEST_VOTE,
                 args.as_ref()
-            ).await;
+            );
+            let ret = match tokio::time::timeout(
+                Duration::from_millis(100), 
+                req_vote
+            ).await {
+                Ok(r) => r,
+                Err(_) => Err(TIMEOUT)
+            };
             
             match ret {
                 Ok(Ok(r)) => break Some(r),
@@ -244,9 +253,9 @@ impl Poll {
                 Err(e) => panic!("Unexpect Error: {e:?}")
             }
             tries += 1;
-            tokio::time::sleep(
-                crate::common::RPC_RETRY_WAIT
-            ).await;
+            // tokio::time::sleep(
+            //     crate::common::RPC_RETRY_WAIT
+            // ).await;
         };
 
         if let Some(reply) = ret {
@@ -287,6 +296,8 @@ impl From<RoleCore> for Candidate {
         let RoleCore { raft_core: mut core, logs, ev_q } = role_core;
         let n = core.rpc_client.n();
         core.term += 1;
+
+        debug!("{core}: become a candidate");
 
         {
             let poll = Poll {
