@@ -206,12 +206,12 @@ impl NetworkCore {
 
                 // randomly discard messages in unreliable network env.
                 let discard = !reliable && rand::thread_rng().gen_bool(0.1);
-                let reorder = self.long_reordering.load(Ordering::Relaxed) &&
-                    rand::thread_rng().gen_bool(2f64 / 3f64);
 
                 if discard {
                     Err(TIMEOUT)
                 } else {
+                    let reorder = self.long_reordering.load(Ordering::Relaxed) &&
+                        rand::thread_rng().gen_bool(2f64 / 3f64);
                     if reorder {
                         let ms = 200u64 + rand::thread_rng().gen_range(1..=2000);
                         tokio::time::sleep(Duration::from_millis(ms)).await;
