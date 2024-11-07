@@ -9,6 +9,8 @@ use tokio::sync::Mutex;
 #[cfg(not(feature = "no_debug"))]
 use colored::Colorize;
 
+use crate::debug;
+
 use super::{
     Tester, timeout_test, ELECTION_TIMEOUT, 
     utils::{gen_bool, randu32, randu64, randusize}
@@ -353,7 +355,7 @@ async fn test3c_figure8_unreliable() {
 
 /// Concurrently start multiple workers, 
 /// each worker keeps asking all of the nodes to start a command, 
-/// then observe the command committed at that command index.
+/// then observe the command getting committed at that command index.
 /// At the same time, randomly crash and restart some nodes.
 /// Expect that all workers observe a same series of commands.
 async fn internal_churn(reliable: bool) -> Result<(), String> {
@@ -429,17 +431,22 @@ async fn internal_churn(reliable: bool) -> Result<(), String> {
 
         for _ in 0..20 {
             if gen_bool(0.2) {
-                safe_tester.lock().await.disconnect(randusize() % N).await;
+                let id = randusize() % N;
+                safe_tester.lock().await.disconnect(id).await;
+                debug!("disconnect {id}");
             }
 
             if gen_bool(0.5) {
                 let id = randusize() % N;
                 safe_tester.lock().await.start_one(id, false, false).await?;
                 safe_tester.lock().await.connect(id).await;
+                debug!("restart {id}");
             }
 
             if gen_bool(0.2) {
-                safe_tester.lock().await.crash_one(randusize() % N).await?;
+                let id = randusize() % N;
+                safe_tester.lock().await.crash_one(id).await?;
+                debug!("crash {id}");
             }
 
             // Make crash/restart infrequent enough that the peers can often 
@@ -457,6 +464,7 @@ async fn internal_churn(reliable: bool) -> Result<(), String> {
             safe_tester.lock().await.start_one(i, false, false).await?;
             safe_tester.lock().await.connect(i).await;
         }
+        debug!("connect all");
 
         flag.store(false, Ordering::Relaxed);
 

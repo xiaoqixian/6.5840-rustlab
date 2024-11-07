@@ -19,7 +19,7 @@ use labrpc::network::Network;
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::{sync::Mutex, task::JoinHandle};
 use crate::{
-    persist::{make_persister, Persister}, raft::Raft, ApplyMsg, UbRx
+    debug, persist::{make_persister, Persister}, raft::Raft, ApplyMsg, UbRx
 };
 use colored::Colorize;
 
@@ -532,6 +532,7 @@ impl<T> Applier<T>
                     Some(msg) => Some(msg)
                 },
                 _ = Self::check_alive(killed.clone()) => {
+                    debug!("Applier[{id}]: no longer alive, close apply channel");
                     apply_ch.close();
                     None
                 }
@@ -545,6 +546,7 @@ impl<T> Applier<T>
             let mut logs = logs.lock().await;
             let failed = match msg {
                 ApplyMsg::Command {index, command} => {
+                    debug!("Applier[{id}]: applied command {index}");
                     Self::check_logs(self.id, index, command, 
                         &mut logs.deref_mut()).await.is_err()
                 },
@@ -556,6 +558,7 @@ impl<T> Applier<T>
                 }
             };
             if failed {
+                debug!("Applier[{id}]: failed");
                 apply_ch.close();
                 break;
             }
@@ -591,7 +594,8 @@ impl<T> Applier<T>
             return Err(format!("Server {id} apply out of order, expect {}, got {cmd_idx}", logs[id].len()));
         }
         else if cmd_idx < logs[id].len() {
-            return Err(format!("Server {id} has applied the log {cmd_idx} before"));
+            debug!("Server {id} has applied the log {cmd_idx} before, the last applied command index = {}", logs[id].len()-1);
+            return Err(format!("Server {id} has applied the log {cmd_idx} before."));
         }
 
         // check all logs of other nodes, if the index exist in the logs
@@ -600,7 +604,7 @@ impl<T> Applier<T>
         for (i, log) in logs.iter().enumerate() {
             match log.get(cmd_idx) {
                 Some(val) if *val != cmd_value => {
-                    return Err(format!("commit index = {cmd_idx} 
+                    return Err(format!("commit index = {cmd_idx}, \
                         server={id} {cmd_value} != server={i} {val}"));
                 },
                 _ => {}
@@ -609,6 +613,12 @@ impl<T> Applier<T>
 
         logs[id].push(cmd_value);
         Ok(())
+    }
+}
+
+impl<T> std::fmt::Display for Applier<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Applier [{}]", self.id)
     }
 }
 
