@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use crate::{
-    candidate::VoteStatus, common, debug, event::{Event, TO_CANDIDATE}, info, logs::Logs, raft::RaftCore, role::{RoleCore, RoleEvQueue, Trans}, service::{AppendEntriesArgs, AppendEntriesReply, AppendEntriesType, EntryStatus, QueryEntryArgs, QueryEntryReply, RequestVoteArgs, RequestVoteReply}, OneTx
+    candidate::VoteStatus, common, debug, event::{Event, TO_CANDIDATE}, info, logs::Logs, raft::RaftCore, role::{RoleCore, RoleEvQueue, Trans}, service::{AppendEntriesArgs, AppendEntriesReply, AppendEntriesType, EntryStatus, QueryEntryArgs, QueryEntryReply, RequestVoteArgs, RequestVoteReply}, warn, OneTx
 };
 
 mod timer;
@@ -35,7 +35,7 @@ impl Follower {
             }
 
             Event::AppendEntries {args, reply_tx} => {
-                info!("{self}: {}", args);
+                debug!("{self}: {}", args);
                 self.append_entries(args, reply_tx).await;
             },
             Event::RequestVote {args, reply_tx} => {
@@ -43,7 +43,7 @@ impl Follower {
                 self.request_vote(args, reply_tx).await;
             },
             Event::QueryEntry {args, reply_tx} => {
-                info!("{self}: QueryEntry, log_info = {}", args.log_info);
+                debug!("{self}: QueryEntry, log_info = {}", args.log_info);
                 self.query_entry(args, reply_tx).await;
             }
 
@@ -123,6 +123,7 @@ impl Follower {
                 VoteStatus::Rejected { term: myterm }
             };
             if !self.persist_state() {
+                warn!("{self}: the persister is down, exit!");
                 return
             }
             vote
@@ -136,9 +137,17 @@ impl Follower {
     }
 
     async fn query_entry(&self, args: QueryEntryArgs, reply_tx: OneTx<QueryEntryReply>) {
+        // this query is from a valid leader, which means this 
+        // server is still in connect with its leader, so reset 
+        // the heartbeat timer.
+        if args.term == self.core.term {
+            self.hb_timer.reset();
+        }
         let reply = if self.logs.log_exist(&args.log_info) {
             QueryEntryReply::Exist
-        } else { QueryEntryReply::NotExist };
+        } else { 
+            QueryEntryReply::NotExist 
+        };
         reply_tx.send(reply).unwrap();
     }
 
@@ -186,7 +195,7 @@ impl Into<RoleCore> for Follower {
 
 impl std::fmt::Display for Follower {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Follower[{}, term={}]", self.core.me, self.core.term)
+        write!(f, "Follower[{}, term={}, last_log={}]", self.core.me, self.core.term, self.logs.last_log_info())
     }
 }
 

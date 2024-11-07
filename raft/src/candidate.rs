@@ -7,7 +7,7 @@ use std::{sync::{atomic::{AtomicBool, Ordering}, Arc}, time::Duration};
 use labrpc::{client::ClientEnd, err::{DISCONNECTED, TIMEOUT}};
 use serde::{Deserialize, Serialize};
 
-use crate::{common, debug, event::{Event, TO_FOLLOWER, TO_LEADER}, logs::Logs, raft::{RaftCore, RaftInfo}, role::{RoleCore, RoleEvQueue, Trans}, service::{AppendEntriesArgs, AppendEntriesReply, EntryStatus, QueryEntryArgs, QueryEntryReply, RequestVoteArgs, RequestVoteReply, RequestVoteRes}, OneTx};
+use crate::{common::{self, RPC_RETRY_WAIT}, debug, event::{Event, TO_FOLLOWER, TO_LEADER}, logs::Logs, raft::RaftCore, role::{RoleCore, RoleEvQueue, Trans}, service::{AppendEntriesArgs, AppendEntriesReply, EntryStatus, QueryEntryArgs, QueryEntryReply, RequestVoteArgs, RequestVoteReply, RequestVoteRes}, warn, OneTx};
 use crate::info;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -31,6 +31,7 @@ pub enum VoteStatus {
 struct Poll {
     me: usize,
     term: usize,
+    active: Arc<AtomicBool>,
     ev_q: RoleEvQueue
 }
 
@@ -66,7 +67,7 @@ impl Candidate {
             },
 
             Event::AppendEntries {args, reply_tx} => {
-                info!("{self}: AppendEntries from {}, term={}", args.from, args.term);
+                debug!("{self}: AppendEntries from {}, term={}", args.from, args.term);
                 self.append_entries(args, reply_tx).await;
             },
             Event::RequestVote {args, reply_tx} => {
@@ -74,19 +75,25 @@ impl Candidate {
                 self.request_vote(args, reply_tx).await;
             },
             Event::QueryEntry {args, reply_tx} => {
-                info!("{self}: QueryEntry, log_info = {}", args.log_info);
+                debug!("{self}: QueryEntry, log_info = {}", args.log_info);
                 self.query_entry(args, reply_tx).await;
             }
 
             // candidate related events
-            Event::GrantVote { voter } => {
-                self.audit_vote(voter).await;
+            Event::GrantVote { term, voter } => {
+                debug!("{self}: GrantVote from {voter}, term = {term}");
+                if term == self.core.term {
+                    debug!("{self}: accept vote from {voter}, term = {term}");
+                    self.audit_vote(voter).await;
+                }
             },
 
             Event::OutdateCandidate {new_term} => {
-                self.core.term = new_term;
-                let _ = self.ev_q.put(TO_FOLLOWER);
-                self.persist_state();
+                if new_term >= self.core.term {
+                    self.core.term = new_term;
+                    let _ = self.ev_q.put(TO_FOLLOWER);
+                    self.persist_state();
+                }
             },
             
             Event::ElectionTimeout => {
@@ -211,8 +218,12 @@ impl Candidate {
         if !self.voters[voter] {
             self.voters[voter] = true;
             self.votes += 1;
-            if self.votes >= self.n / 2 {
-                let _ = self.ev_q.put(TO_LEADER);
+            debug!("{self}: accepted vote from {voter}");
+            if self.votes > self.n / 2 {
+                debug!("{self}: get enough votes.");
+                if let Err(_) = self.ev_q.put(TO_LEADER) {
+                    warn!("{self}: try to put TO_LEADER failed");
+                }
             }
         }
     }
@@ -224,18 +235,18 @@ impl Candidate {
 }
 
 impl Poll {
-    async fn poll(self: Arc<Self>, peer: ClientEnd, 
-        args: Arc<RequestVoteArgs>) {
-        const TRIES: usize = 5;
-        let mut tries = 0usize;
-
+    async fn poll(self: Arc<Self>, peer: ClientEnd, args: Arc<RequestVoteArgs>) {
         let ret = loop {
+            if !self.active.load(Ordering::Relaxed) {
+                return
+            }
+
             let req_vote = peer.call::<_, RequestVoteRes>(
                 crate::common::REQUEST_VOTE,
                 args.as_ref()
             );
             let ret = match tokio::time::timeout(
-                Duration::from_millis(100), 
+                RPC_RETRY_WAIT,
                 req_vote
             ).await {
                 Ok(r) => r,
@@ -245,17 +256,9 @@ impl Poll {
             match ret {
                 Ok(Ok(r)) => break Some(r),
                 Ok(Err(_)) | Err(DISCONNECTED) => break None,
-                Err(TIMEOUT) => {
-                    if tries == TRIES {
-                        break None;
-                    }
-                },
+                Err(TIMEOUT) => {},
                 Err(e) => panic!("Unexpect Error: {e:?}")
             }
-            tries += 1;
-            // tokio::time::sleep(
-            //     crate::common::RPC_RETRY_WAIT
-            // ).await;
         };
 
         if let Some(reply) = ret {
@@ -264,10 +267,11 @@ impl Poll {
     }
 
     async fn check_vote(&self, reply: RequestVoteReply) {
-        info!("{self} vote reply from {}, vote {}", reply.voter, reply.vote);
+        debug!("{self} vote reply from {}, vote {}", reply.voter, reply.vote);
         match reply.vote {
             VoteStatus::Granted => {
                 let _ = self.ev_q.put(Event::GrantVote {
+                    term: self.term,
                     voter: reply.voter,
                 });
             },
@@ -299,10 +303,12 @@ impl From<RoleCore> for Candidate {
 
         debug!("{core}: become a candidate");
 
+        let active = Arc::new(AtomicBool::new(true));
         {
             let poll = Poll {
                 me: core.me,
                 term: core.term,
+                active: active.clone(),
                 ev_q: ev_q.clone()
             };
             let poll = Arc::new(poll);
@@ -331,10 +337,10 @@ impl From<RoleCore> for Candidate {
         Self {
             core,
             logs,
-            active: Arc::new(AtomicBool::new(true)),
+            active,
             ev_q,
             voters: vec![false; n],
-            votes: 0,
+            votes: 1,
             n
         }
     }
@@ -352,13 +358,13 @@ impl Into<RoleCore> for Candidate {
 
 impl std::fmt::Display for Candidate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Candidate[{}, term={}]", self.core.me, self.core.term)
+        write!(f, "Candidate[{}, term={}, last_log={}, votes={}]", self.core.me, self.core.term, self.logs.last_log_info(), self.votes)
     }
 }
 
 impl std::fmt::Display for Poll {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Candidate[{}, term={}]", self.me, self.term)
+        write!(f, "Poll[{}, term={}]", self.me, self.term)
     }
 }
 

@@ -69,6 +69,7 @@ pub struct RequestVoteReply {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct QueryEntryArgs {
+    pub term: usize,
     pub log_info: LogInfo
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]

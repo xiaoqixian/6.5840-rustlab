@@ -2,7 +2,7 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
+use std::{sync::{atomic::{AtomicBool, Ordering}, Arc}, time::Duration};
 
 use labrpc::{client::ClientEnd, err::{DISCONNECTED, TIMEOUT}};
 use serde::{de::DeserializeOwned, Serialize};
@@ -34,12 +34,19 @@ impl Peer {
         for _ in 0..tries {
             if !self.active.load(Ordering::Relaxed) { break; }
 
-            let reply = self.end.call::<A, Result<R, E>>(method, arg).await;
+            let call = self.end.call::<A, Result<R, E>>(method, arg);
+            let reply = match tokio::time::timeout(
+                RPC_RETRY_WAIT,
+                call
+            ).await {
+                Ok(r) => r,
+                Err(_) => Err(TIMEOUT)
+            };
             match reply {
                 Ok(Ok(v)) => return Some(v),
                 Ok(_) => return None,
                 Err(TIMEOUT) => {
-                    tokio::time::sleep(RPC_RETRY_WAIT).await;
+                    // tokio::time::sleep(RPC_RETRY_WAIT).await;
                     continue;
                 },
                 Err(DISCONNECTED) => return None,
@@ -56,14 +63,21 @@ impl Peer {
               E: DeserializeOwned + Send + Sync
     {
         while self.active.load(Ordering::Relaxed) {
-            let reply = self.end.call::<A, Result<R, E>>(method, arg).await;
+            let call = self.end.call::<A, Result<R, E>>(method, arg);
+            let reply = match tokio::time::timeout(
+                RPC_RETRY_WAIT,
+                call
+            ).await {
+                Ok(r) => r,
+                Err(_) => Err(TIMEOUT)
+            };
             match reply {
                 Ok(Ok(v)) => return Some(v),
                 Err(DISCONNECTED) => {
                     tokio::time::sleep(DISCONNECT_WAIT).await;
                 },
                 Ok(_) | Err(TIMEOUT) => {
-                    tokio::time::sleep(RPC_RETRY_WAIT).await;
+                    // tokio::time::sleep(RPC_RETRY_WAIT).await;
                 },
                 Err(e) => panic!("Unexpected error: {e:?}")
             }

@@ -9,15 +9,15 @@ pub const HEARTBEAT_TIMEOUT: Range<u64> = 300..400;
 pub const ELECTION_TIMEOUT: Range<u64> = 900..1100;
 
 pub const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(50);
-pub const RPC_RETRY_WAIT: Duration = Duration::from_millis(100);
+pub const RPC_RETRY_WAIT: Duration = Duration::from_millis(50);
 pub const DISCONNECT_WAIT: Duration = Duration::from_millis(200);
-pub const NET_FAIL_WAIT: Duration = Duration::from_millis(100);
+// pub const NET_FAIL_WAIT: Duration = Duration::from_millis(100);
 
 pub const REQUEST_VOTE: &'static str = "RpcService.request_vote";
 pub const APPEND_ENTRIES: &'static str = "RpcService.append_entries";
 pub const QUERY_ENTRY: &'static str = "RpcService.query_entry";
 
-pub const RPC_FAIL_RETRY: usize = 5;
+pub const RPC_FAIL_RETRY: usize = 10;
 
 pub fn gen_rand_duration(range: Range<u64>) -> Duration {
     let ms: u64 = rand::thread_rng().gen_range(range);

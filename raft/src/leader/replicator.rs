@@ -2,7 +2,7 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use crate::{common::{self, RPC_FAIL_RETRY}, event::Event, info, leader::ldlogs::ReplQueryRes, logs::LogInfo, role::RoleEvQueue, service::{AppendEntriesArgs, AppendEntriesReply, AppendEntriesType, EntryStatus, QueryEntryArgs, QueryEntryReply}, utils::Peer};
+use crate::{common::{self, RPC_FAIL_RETRY}, debug, event::Event, info, leader::ldlogs::ReplQueryRes, logs::LogInfo, role::RoleEvQueue, service::{AppendEntriesArgs, AppendEntriesReply, AppendEntriesType, EntryStatus, QueryEntryArgs, QueryEntryReply}, utils::Peer};
 
 use super::{counter::ReplCounter, ldlogs::ReplLogs};
 
@@ -55,6 +55,7 @@ impl Replicator {
                 };
 
                 let args = QueryEntryArgs {
+                    term: self.term,
                     log_info: LogInfo::new(mid, mid_term)
                 };
                 
@@ -64,7 +65,7 @@ impl Replicator {
                     RPC_FAIL_RETRY
                 ).await {
                     None => {
-                        tokio::time::sleep(common::NET_FAIL_WAIT).await;
+                        // tokio::time::sleep(common::NET_FAIL_WAIT).await;
                         continue 'round;
                     },
                     Some(r) => r
@@ -125,6 +126,7 @@ impl Replicator {
             match reply.entry_status {
                 EntryStatus::Stale { term } => {
                     if term > self.term {
+                        debug!("{self}: {} said im a stale leader", self.peer_id);
                         let _ = self.ev_q.put(Event::StaleLeader {
                             new_term: term
                         });

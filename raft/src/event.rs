@@ -42,6 +42,8 @@ pub enum Event {
 
     // candidate related events
     GrantVote {
+        // which term this vote is granted on
+        term: usize,
         voter: usize,
     },
     

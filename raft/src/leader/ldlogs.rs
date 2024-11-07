@@ -47,6 +47,7 @@ impl LdLogs {
     ld_logs_method!(write, update_commit(lci: usize));
     ld_logs_method!(read,  up_to_date(log: &LogInfo) -> bool);
     ld_logs_method!(read, log_exist(log: &LogInfo) -> bool);
+    ld_logs_method!(read, last_log_info() -> LogInfo);
 }
 
 impl serde::Serialize for LdLogs {

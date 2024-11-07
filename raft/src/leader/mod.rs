@@ -3,11 +3,10 @@
 // Author: https://github.com/xiaoqixian
 
 use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
-use labrpc::debug;
 use serde::{Serialize, ser::SerializeStruct};
 
 use crate::{
-    candidate::VoteStatus, event::{Event, TO_FOLLOWER}, info, raft::RaftCore, role::{RoleCore, RoleEvQueue, Trans}, service::{
+    candidate::VoteStatus, debug, event::{Event, TO_FOLLOWER}, info, raft::RaftCore, role::{RoleCore, RoleEvQueue, Trans}, service::{
         AppendEntriesArgs,
         AppendEntriesReply,
         EntryStatus,
@@ -108,6 +107,7 @@ impl Leader {
             panic!("Leader {} and {} has the same term {}", 
                 self.core.me, args.from, myterm);
         } else {
+            debug!("{self}: {} is a leader with greater term, become a follower.", args.from);
             self.core.term = args.term;
             self.persist_state();
             let _ = self.ev_q.put(TO_FOLLOWER);
@@ -129,6 +129,7 @@ impl Leader {
             debug!("{self}: denied vote from ({}, {}), I'm the real leader.", args.from, args.term);
             VoteStatus::Denied { term: myterm }
         } else {
+            debug!("{self}: candidate {} has a greater term.", args.from);
             self.core.term = args.term;
             let _ = self.ev_q.put(TO_FOLLOWER);
             
@@ -240,7 +241,7 @@ impl Into<RoleCore> for Leader {
 
 impl std::fmt::Display for Leader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Leader[{}, term={}]", self.core.me, self.core.term)
+        write!(f, "Leader[{}, term={}, last_log={}]", self.core.me, self.core.term,  self.logs.last_log_info())
     }
 }
 

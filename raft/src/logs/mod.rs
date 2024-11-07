@@ -7,7 +7,7 @@ use std::ops::{RangeBounds, RangeInclusive};
 use applier::{Applier, ApplyEntry};
 use serde::{Deserialize, Serialize};
 
-use crate::{fatal, info, warn, ApplyMsg, UbTx};
+use crate::{debug, fatal, info, warn, ApplyMsg, UbTx};
 
 mod applier;
 
@@ -69,6 +69,7 @@ impl Logs {
 
         if let Some(range) = match lai {
             Some(lai) if lai < cmd_cnt - 1 => {
+                debug!("Logs[{me}]: lai = {lai}, cmd_cnt = {cmd_cnt}");
                 let start = logs.iter().enumerate()
                     .find_map(|(idx, et)| match et.log_type {
                         LogType::Command {index, ..} if index == lai+1 => Some(idx),
@@ -76,6 +77,7 @@ impl Logs {
                     })
                     .expect(&format!("Command with index {} \
                             should exist in logs.", lai+1));
+                debug!("Logs[{me}]: reapply logs in range {:?}", start..logs.len());
                 Some(start..logs.len())
             },
             _ => None
@@ -309,7 +311,7 @@ impl Into<Option<(usize, Vec<u8>)>> for LogEntry {
 
 impl std::fmt::Display for Logs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[Logs {}]", self.me)
+        write!(f, "Logs[{}]", self.me)
     }
 }
 

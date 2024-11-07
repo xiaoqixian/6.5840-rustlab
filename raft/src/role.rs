@@ -99,22 +99,22 @@ impl Role {
             *self = match (role, trans) {
                 (Self::Follower(flw), Trans::ToCandidate) => {
                     let core = flw.stop();
-                    // debug!("[Raft {}]: be candidate", core.raft_core.me);
+                    debug!("[Raft {}]: be candidate", core.raft_core.me);
                     Self::Candidate(Candidate::from(core))
                 },
                 (Self::Candidate(cd), Trans::ToLeader) => {
                     let core = cd.stop();
-                    // debug!("[Raft {}]: be leader", core.raft_core.me);
+                    debug!("[Raft {}]: be leader", core.raft_core.me);
                     Self::Leader(Leader::from(core))
                 },
                 (Self::Candidate(cd), Trans::ToFollower) => {
                     let core = cd.stop();
-                    // debug!("[Raft {}]: candidate to follower", core.raft_core.me);
+                    debug!("[Raft {}]: candidate to follower", core.raft_core.me);
                     Self::Follower(Follower::from(core))
                 },
                 (Self::Leader(ld), Trans::ToFollower) => {
                     let core = ld.stop();
-                    // debug!("[Raft {}]: leader to follower", core.raft_core.me);
+                    debug!("[Raft {}]: leader to follower", core.raft_core.me);
                     Self::Follower(Follower::from(core))
                 },
                 (r, t) => panic!("Unexpected combination of 
