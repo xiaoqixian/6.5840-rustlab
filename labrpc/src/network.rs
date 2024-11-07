@@ -213,7 +213,8 @@ impl NetworkCore {
                     let reorder = self.long_reordering.load(Ordering::Relaxed) &&
                         rand::thread_rng().gen_bool(2f64 / 3f64);
                     if reorder {
-                        let ms = 200u64 + rand::thread_rng().gen_range(1..=2000);
+                        let ub = rand::thread_rng().gen_range(1..=2000);
+                        let ms = 200u64 + rand::thread_rng().gen_range(1..=ub);
                         tokio::time::sleep(Duration::from_millis(ms)).await;
                     }
                     node.server.dispatch(req).await
