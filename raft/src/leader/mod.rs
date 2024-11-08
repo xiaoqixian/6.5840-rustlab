@@ -14,7 +14,7 @@ use crate::{
         QueryEntryReply,
         RequestVoteArgs,
         RequestVoteReply
-    }, utils::Peer, warn, OneTx};
+    }, utils::Peer, warn, ApplyMsg, };
 
 mod replicator;
 mod counter;
@@ -61,8 +61,18 @@ impl Leader {
 
             Event::UpdateCommit(lci) => {
                 info!("{self}: update commit to {lci}");
-                self.logs.update_commit(lci);
-                self.persist_state();
+                let apply_cmds = self.logs.update_commit(lci);
+                let success = self.persist_state();
+                if success {
+                    for (index, command) in apply_cmds.into_iter() {
+                        // it's OK if the apply operation failed
+                        if let Err(_) = self.core.apply_ch.send(
+                            ApplyMsg::Command { index, command }
+                        ) {
+                            break
+                        }
+                    }
+                }
             },
 
             Event::StaleLeader {new_term} => {
@@ -81,7 +91,7 @@ impl Leader {
         self.into()
     }
 
-    async fn start_cmd(&self, cmd: Vec<u8>, reply_tx: OneTx<Option<(usize, usize)>>) {
+    async fn start_cmd(&self, cmd: Vec<u8>, reply_tx: tokio::sync::oneshot::Sender<Option<(usize, usize)>>) {
         let term = self.core.term;
         let (idx, cmd_idx) = self.logs.push_cmd(term, cmd);
         debug!("{self}: start a command, index = {idx}, command index = {cmd_idx}");
@@ -95,7 +105,7 @@ impl Leader {
     }
 
     async fn append_entries(&mut self, args: AppendEntriesArgs, reply_tx: 
-        OneTx<AppendEntriesReply>) 
+        tokio::sync::oneshot::Sender<AppendEntriesReply>) 
     {
         let myterm = self.core.term;
 
@@ -121,7 +131,7 @@ impl Leader {
     }
 
     async fn request_vote(&mut self, args: RequestVoteArgs, reply_tx: 
-        OneTx<RequestVoteReply>)
+        tokio::sync::oneshot::Sender<RequestVoteReply>)
     {
         let myterm = self.core.term;
         
@@ -159,7 +169,7 @@ impl Leader {
         reply_tx.send(reply).unwrap();
     }
 
-    async fn query_entry(&self, args: QueryEntryArgs, reply_tx: OneTx<QueryEntryReply>) {
+    async fn query_entry(&self, args: QueryEntryArgs, reply_tx: tokio::sync::oneshot::Sender<QueryEntryReply>) {
         let reply = if self.logs.log_exist(&args.log_info) {
             QueryEntryReply::Exist
         } else { QueryEntryReply::NotExist };
@@ -200,6 +210,7 @@ impl From<RoleCore> for Leader {
         for idx in (lci+1)..=noop_idx {
             repl_counter.watch_idx(idx);
         }
+        debug!("Leader[{}]: watch logs in range {:?}", core.me, (lci+1)..=noop_idx);
 
         for peer in core.rpc_client.peers() {
             #[cfg(feature = "no_debug")]

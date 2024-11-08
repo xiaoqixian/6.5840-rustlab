@@ -4,7 +4,11 @@
 
 use std::{ops::RangeInclusive, sync::{Arc, RwLock}};
 
-use crate::{info, logs::{LogInfo, Logs}, service::AppendEntriesType};
+use crate::{
+    info, 
+    logs::{LogInfo, Logs}, 
+    service::AppendEntriesType,
+};
 
 /// LdLogs is a thread-safe wrapper of Logs
 pub struct LdLogs {
@@ -44,7 +48,7 @@ macro_rules! ld_logs_method {
 
 impl LdLogs {
     ld_logs_method!(write, push_cmd(term: usize, cmd: Vec<u8>) -> (usize, usize));
-    ld_logs_method!(write, update_commit(lci: usize));
+    ld_logs_method!(write, update_commit(lci: usize) -> Vec<(usize, Vec<u8>)>);
     ld_logs_method!(read,  up_to_date(log: &LogInfo) -> bool);
     ld_logs_method!(read, log_exist(log: &LogInfo) -> bool);
     ld_logs_method!(read, last_log_info() -> LogInfo);

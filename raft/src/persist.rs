@@ -2,7 +2,7 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use std::{sync::{Arc, Mutex}, time::Duration};
+use std::sync::{Arc, Mutex};
 
 use crate::{logs::LogsInfo, raft::RaftInfo};
 use serde::Deserialize;
@@ -50,8 +50,10 @@ impl Persister {
 
 /// This function is provided for the tester.
 /// You are not supposed to call it.
+#[cfg(test)]
 pub fn make_persister(persister: Persister) 
     -> Result<(Persister, Option<Vec<u8>>, Option<Vec<u8>>), String> {
+    use std::time::Duration;
     let mut tries = 0;
     let mut guard = loop {
         match persister.storage.try_lock() {

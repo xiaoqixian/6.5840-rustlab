@@ -2,7 +2,7 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use std::{sync::{atomic::{AtomicBool, Ordering}, Arc}, time::Duration};
+use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
 
 use labrpc::{client::ClientEnd, err::{DISCONNECTED, TIMEOUT}};
 use serde::{de::DeserializeOwned, Serialize};

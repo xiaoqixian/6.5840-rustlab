@@ -18,7 +18,6 @@ mod utils;
 type UbTx<T> = tokio::sync::mpsc::UnboundedSender<T>;
 type UbRx<T> = tokio::sync::mpsc::UnboundedReceiver<T>;
 type OneTx<T> = tokio::sync::oneshot::Sender<T>;
-// type OneRx<T> = tokio::sync::oneshot::Receiver<T>;
 
 pub enum ApplyMsg {
     Command {

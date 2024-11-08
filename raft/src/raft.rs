@@ -8,7 +8,7 @@ use labrpc::client::Client;
 use serde::{Serialize, Deserialize};
 
 use crate::{
-    debug, event::{EvQueue, Event}, follower::Follower, info, logs::Logs, persist::{Persister, RaftState}, role::{Role, RoleCore, RoleEvQueue}, service::RpcService, ApplyMsg, UbRx, UbTx
+    debug, event::{EvQueue, Event}, follower::Follower, info, logs::{LogEntry, Logs}, persist::{Persister, RaftState}, role::{Role, RoleCore, RoleEvQueue}, service::RpcService, warn, ApplyMsg, UbRx, UbTx
 };
 
 pub(crate) struct RaftCore {
@@ -16,7 +16,8 @@ pub(crate) struct RaftCore {
     pub rpc_client: Client,
     pub persister: Persister,
     pub term: usize,
-    pub vote_for: Option<usize>
+    pub vote_for: Option<usize>,
+    pub apply_ch: UbTx<ApplyMsg>
 }
 
 #[derive(Clone)]
@@ -78,31 +79,67 @@ impl Raft {
         let (ev_ch_tx, ev_ch_rx) = tokio::sync::mpsc::unbounded_channel();
         let ev_q = Arc::new(EvQueue::new(ev_ch_tx, me));
 
+        debug!("Raft[{me}]: lai = {lai:?}");
         let state: RaftState = match raft_state {
-            None => Default::default(),
-            Some(s) => bincode::deserialize_from(&s[..]).unwrap()
+            None => {
+                let state = Default::default();
+                debug!("Raft {me} init from default state");
+                debug_assert!(lai.is_none());
+                state
+            },
+            Some(s) => {
+                let state = bincode::deserialize_from(&s[..]).unwrap();
+                debug!("Raft {me} init from state \n{state:?}");
+                state
+            }
         };
-        debug!("Raft {me} init from state \n{state:?}");
         let RaftState {
             raft_info, logs_info
         } = state;
+
+        let handle = RaftHandle {
+            ev_q: ev_q.clone(),
+        };
+
+        let logs = Logs::new(me, logs_info);
+
+        // apply commands that may get left before crash.
+        if let Some(lai) = lai {
+            let lai_idx = match logs.index_cmd(lai) {
+                Some(idx) => idx,
+                None => panic!("{lai} does not exist in logs, that's odd.")
+            };
+            let lci = logs.lci();
+            debug_assert!(lai_idx <= lci, "lai {lai_idx} should be less than lci {lci}");
+            if lai_idx < lci {
+                let apply_range = (lai_idx+1)..=lci;
+                for (index, command) in logs.get_range(&apply_range)
+                    .unwrap()
+                    .into_iter()
+                    .cloned()
+                    .filter_map(LogEntry::into)
+                {
+                    if let Err(_) = apply_ch.send(ApplyMsg::Command {
+                        index,
+                        command
+                    }) {
+                        warn!("Apply channel should not be closed so quick");
+                    }
+                }
+            }
+        }
+
+        rpc_client.add_service("RpcService".to_string(), 
+            Box::new(RpcService::new(handle))).await;
 
         let core = RaftCore {
             me,
             rpc_client,
             persister,
             term: raft_info.term,
-            vote_for: raft_info.vote_for
+            vote_for: raft_info.vote_for,
+            apply_ch
         };
-
-        let handle = RaftHandle {
-            ev_q: ev_q.clone(),
-        };
-
-        let logs = Logs::new(me, apply_ch, logs_info, lai);
-
-        core.rpc_client.add_service("RpcService".to_string(), 
-            Box::new(RpcService::new(handle))).await;
 
         let flw = Follower::from(RoleCore {
             raft_core: core,

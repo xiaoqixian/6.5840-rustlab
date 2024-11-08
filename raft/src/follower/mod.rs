@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use crate::{
-    candidate::VoteStatus, common, debug, event::{Event, TO_CANDIDATE}, info, logs::Logs, raft::RaftCore, role::{RoleCore, RoleEvQueue, Trans}, service::{AppendEntriesArgs, AppendEntriesReply, AppendEntriesType, EntryStatus, QueryEntryArgs, QueryEntryReply, RequestVoteArgs, RequestVoteReply}, warn, OneTx
+    candidate::VoteStatus, common, debug, event::{Event, TO_CANDIDATE}, logs::Logs, raft::RaftCore, role::{RoleCore, RoleEvQueue, Trans}, service::{AppendEntriesArgs, AppendEntriesReply, AppendEntriesType, EntryStatus, QueryEntryArgs, QueryEntryReply, RequestVoteArgs, RequestVoteReply}, warn, ApplyMsg, OneTx, 
 };
 
 mod timer;
@@ -62,9 +62,11 @@ impl Follower {
         self.into()
     }
 
-    async fn append_entries(&mut self, args: AppendEntriesArgs, reply_tx: 
-        OneTx<AppendEntriesReply>) 
-    {
+    async fn append_entries(
+        &mut self,
+        args: AppendEntriesArgs,
+        reply_tx: OneTx<AppendEntriesReply>,
+    ) {
         let myterm = self.core.term;
         let entry_status = if args.term < myterm {
             EntryStatus::Stale {
@@ -85,10 +87,18 @@ impl Follower {
                     EntryStatus::Confirmed
                 }
             };
-            self.logs.update_commit(args.lci);
-            if !self.persist_state() {
-                return
+            let apply_cmds = self.logs.update_commit(args.lci);
+            let success = self.persist_state();
+
+            if !success { return }
+            
+            for (index, command) in apply_cmds.into_iter() {
+                let msg = ApplyMsg::Command { index, command };
+                if let Err(_) = self.core.apply_ch.send(msg) {
+                    break
+                }
             }
+
             entry_status
         };
         let reply = AppendEntriesReply {
@@ -99,9 +109,11 @@ impl Follower {
         reply_tx.send(reply).unwrap();
     }
 
-    async fn request_vote(&mut self, args: RequestVoteArgs, reply_tx: 
-        OneTx<RequestVoteReply>) 
-    {
+    async fn request_vote(
+        &mut self, 
+        args: RequestVoteArgs, 
+        reply_tx: OneTx<RequestVoteReply>
+    ) {
         let myterm = self.core.term;
 
         let vote = if args.term <= myterm {
@@ -136,7 +148,11 @@ impl Follower {
         reply_tx.send(reply).unwrap();
     }
 
-    async fn query_entry(&self, args: QueryEntryArgs, reply_tx: OneTx<QueryEntryReply>) {
+    async fn query_entry(
+        &self,
+        args: QueryEntryArgs,
+        reply_tx: OneTx<QueryEntryReply>,
+    ) {
         // this query is from a valid leader, which means this 
         // server is still in connect with its leader, so reset 
         // the heartbeat timer.

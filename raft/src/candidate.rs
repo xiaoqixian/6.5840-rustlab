@@ -2,12 +2,30 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use std::{sync::{atomic::{AtomicBool, Ordering}, Arc}, time::Duration};
+use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
 
 use labrpc::{client::ClientEnd, err::{DISCONNECTED, TIMEOUT}};
 use serde::{Deserialize, Serialize};
 
-use crate::{common::{self, RPC_RETRY_WAIT}, debug, event::{Event, TO_FOLLOWER, TO_LEADER}, logs::Logs, raft::RaftCore, role::{RoleCore, RoleEvQueue, Trans}, service::{AppendEntriesArgs, AppendEntriesReply, EntryStatus, QueryEntryArgs, QueryEntryReply, RequestVoteArgs, RequestVoteReply, RequestVoteRes}, warn, OneTx};
+use crate::{
+    common::{self, RPC_RETRY_WAIT}, 
+    debug, 
+    event::{Event, TO_FOLLOWER, TO_LEADER}, 
+    logs::Logs, 
+    raft::RaftCore, 
+    role::{RoleCore, RoleEvQueue, Trans}, 
+    service::{
+        AppendEntriesArgs,
+        AppendEntriesReply,
+        EntryStatus,
+        QueryEntryArgs,
+        QueryEntryReply,
+        RequestVoteArgs,
+        RequestVoteReply,
+        RequestVoteRes
+    },
+    warn, OneTx
+};
 use crate::info;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -116,8 +134,11 @@ impl Candidate {
     /// a new leader selected, then the candidate fallback to be a follower.
     /// Otherwise, it's a request from a outdated leader, so the request is 
     /// rejected, candidate returns its new term instead.
-    async fn append_entries(&mut self, args: AppendEntriesArgs,
-        reply_tx: OneTx<AppendEntriesReply>) {
+    async fn append_entries(
+        &mut self,
+        args: AppendEntriesArgs,
+        reply_tx: OneTx<AppendEntriesReply>,
+    ) {
         let myterm = self.core.term;
         
         let entry_status = if args.term >= myterm {
@@ -150,8 +171,11 @@ impl Candidate {
     /// But there is an exception, if the request has the same term, and this 
     /// node has voted for the id before, then it reply VoteStatus::Granted 
     /// again.
-    async fn request_vote(&mut self, args: RequestVoteArgs, reply_tx: 
-        OneTx<RequestVoteReply>) {
+    async fn request_vote(
+        &mut self,
+        args: RequestVoteArgs,
+        reply_tx: OneTx<RequestVoteReply>,
+    ) {
         let myterm = self.core.term;
 
         use std::cmp;
@@ -204,7 +228,11 @@ impl Candidate {
         reply_tx.send(reply).unwrap();
     }
 
-    pub async fn query_entry(&self, args: QueryEntryArgs, reply_tx: OneTx<QueryEntryReply>) {
+    pub async fn query_entry(
+        &self,
+        args: QueryEntryArgs,
+        reply_tx: OneTx<QueryEntryReply>,
+    ) {
         let reply = if self.logs.log_exist(&args.log_info) {
             QueryEntryReply::Exist
         } else { QueryEntryReply::NotExist };

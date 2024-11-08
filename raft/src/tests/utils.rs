@@ -22,17 +22,10 @@ where N: std::ops::Add<R, Output = O>,
     }
 }
 
-use rand::{distributions::uniform::{SampleRange, SampleUniform}, Rng};
+use rand::Rng;
 
 pub fn gen_bool(possibility: f64) -> bool {
     rand::thread_rng().gen_bool(possibility)
-}
-
-pub fn gen_range<R, T>(range: R) -> T
-where R: SampleRange<T>,
-      T: SampleUniform
-{
-    rand::thread_rng().gen_range(range)
 }
 
 pub fn randu32() -> u32 {

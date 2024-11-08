@@ -110,7 +110,7 @@ impl CounterImpl {
         }
 
         if new_offset != self.offset {
-            debug!("Update offset {} -> {new_offset}", self.offset);
+            debug!("Counter[{}]: update offset {} -> {new_offset}", self.me, self.offset);
             let _ = self.ev_q.put(Event::UpdateCommit(new_offset-1));
             let new_start = new_offset - self.offset;
             self.offset = new_offset;

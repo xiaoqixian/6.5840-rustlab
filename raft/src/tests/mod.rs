@@ -58,7 +58,6 @@ struct Node {
     snapshot: Option<Vec<u8>>,
     core: Option<NodeCore>,
     connected: bool,
-    last_applied: Option<usize>
 }
 
 struct Logs<T> {
@@ -111,7 +110,6 @@ impl<T> Tester<T>
                     snapshot: None,
                     core: None,
                     connected: true,
-                    last_applied: None
                 })
                 .collect(),
             start: std::time::Instant::now(),

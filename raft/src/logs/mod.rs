@@ -4,12 +4,9 @@
 
 use std::ops::{RangeBounds, RangeInclusive};
 
-use applier::{Applier, ApplyEntry};
 use serde::{Deserialize, Serialize};
 
-use crate::{debug, fatal, info, warn, ApplyMsg, UbTx};
-
-mod applier;
+use crate::{debug, fatal, info};
 
 #[derive(PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub struct LogInfo {
@@ -43,7 +40,6 @@ pub struct Logs {
     offset: usize,
     cmd_cnt: usize,
     lci: usize,
-    apply_tx: UbTx<ApplyEntry>,
 }
 
 /// LogsInfo contains essential information needed for Logs to recover itself.
@@ -58,38 +54,9 @@ pub struct LogsInfo {
 impl Logs {
     pub fn new(
         me: usize, 
-        apply_tx: UbTx<ApplyMsg>,
         logs_info: LogsInfo,
-        lai: Option<usize>
     ) -> Self {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        tokio::spawn(Applier::new(me, apply_tx).start(rx));
-
         let LogsInfo { lci, logs, offset, cmd_cnt } = logs_info;
-
-        if let Some(range) = match lai {
-            Some(lai) if lai < cmd_cnt - 1 => {
-                debug!("Logs[{me}]: lai = {lai}, cmd_cnt = {cmd_cnt}");
-                let start = logs.iter().enumerate()
-                    .find_map(|(idx, et)| match et.log_type {
-                        LogType::Command {index, ..} if index == lai+1 => Some(idx),
-                        _ => None
-                    })
-                    .expect(&format!("Command with index {} \
-                            should exist in logs.", lai+1));
-                debug!("Logs[{me}]: reapply logs in range {:?}", start..logs.len());
-                Some(start..logs.len())
-            },
-            _ => None
-        } {
-            let entries = logs.get(range).unwrap()
-                .into_iter().cloned()
-                .filter_map(LogEntry::into)
-                .collect();
-            if let Err(_) = tx.send(ApplyEntry::Entries { entries }) {
-                warn!("Applier channel should not be closed so soon");
-            }
-        }
 
         Self {
             me,
@@ -97,7 +64,6 @@ impl Logs {
             offset,
             cmd_cnt,
             lci,
-            apply_tx: tx,
         }
     }
 
@@ -127,6 +93,14 @@ impl Logs {
     pub fn index_term(&self, index: usize) -> Option<usize> {
         self.get(index)
             .map(|entry| entry.term)
+    }
+
+    pub fn index_cmd(&self, cmd_idx: usize) -> Option<usize> {
+        self.logs.iter()
+            .find_map(|et| match et.log_type {
+                LogType::Command {index, ..} if index == cmd_idx => Some(et.index),
+                _ => None
+            })
     }
 
     pub fn log_exist(&self, log_info: &LogInfo) -> bool {
@@ -171,11 +145,21 @@ impl Logs {
     /// extend entries in the tail.
     /// Otherwise, return Err(entries).
     pub fn try_merge(&mut self, prev: &LogInfo, entries: Vec<LogEntry>) -> Result<(), Vec<LogEntry>>{
+        // We may receive delayed requests in a terrible network environment,
+        // in suce case we should just ignore the request.
+        // If the prev.index < lci, it means this is a delayed request, 
+        // so it gets ignored.
+        if prev.index < self.lci {
+            return Ok(());
+        }
+
         let diff = if prev.index < self.offset {
+            debug!("{self}: reject merge cause prev.index {} >= self.offset {}", prev.index, self.offset);
             return Err(entries);
         } else { prev.index - self.offset };
 
         if let None = self.logs.get(diff) {
+            debug!("{self}: reject merge cause prev.index {} does not exist in logs", prev.index);
             return Err(entries);
         }
         if diff+1 < self.logs.len() {
@@ -191,7 +175,7 @@ impl Logs {
         // I know this is kind of dangerous, 
         // but I don't want to use an extra block.
         self.cmd_cnt -= self.logs.drain((diff+1)..)
-            .as_ref()
+        .as_ref()
             .iter()
             .fold(0, count_cmd);
 
@@ -229,31 +213,23 @@ impl Logs {
         lli + 1
     }
 
-    /// Update last committed index, this will cause the logs between
-    /// [old_lci+1, new_lci] applied.
-    pub fn update_commit(&mut self, lci: usize) {
+    /// update LCI, return all the command logs between the old lci 
+    /// and the new lci.
+    pub fn update_commit(&mut self, lci: usize) -> Vec<(usize, Vec<u8>)> {
         if lci <= self.lci {
-            return;
+            return Vec::new();
         }
 
         let lci = lci.min(self.logs.last().unwrap().index);
         let apply_range = (self.lci+1)..=lci;
         self.lci = lci;
 
-        if self.apply_tx.is_closed() {
-            return
-        }
-
-        let entries = match self.get_range(&apply_range) {
+        match self.get_range(&apply_range) {
             None => fatal!("{self}: Invalid range {apply_range:?}, 
                 expected logs range {:?}", self.logs_range()),
             Some(ets) => ets.into_iter().cloned()
                 .filter_map(LogEntry::into)
                 .collect()
-        };
-
-        if let Ok(_) = self.apply_tx.send(ApplyEntry::Entries {entries}) {
-            info!("{self}: apply logs range {apply_range:?}");
         }
     }
 
