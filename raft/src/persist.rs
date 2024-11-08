@@ -10,12 +10,12 @@ use serde::Deserialize;
 #[derive(Clone, Default)]
 struct Storage {
     raft_state: Option<Vec<u8>>,
-    snapshot: Option<Vec<u8>>
+    snapshot: Option<Vec<u8>>,
 }
 
-/// If storage.is_none(), it means the Persister 
-/// is no longer available for this instance. 
-/// Hence the read and write should return a None 
+/// If storage.is_none(), it means the Persister
+/// is no longer available for this instance.
+/// Hence the read and write should return a None
 /// to represent the persistence failed.
 #[derive(Clone)]
 pub struct Persister {
@@ -25,19 +25,24 @@ pub struct Persister {
 impl Persister {
     pub fn new() -> Self {
         Self {
-            storage: Arc::new(Mutex::new(Some(Storage::default())))
+            storage: Arc::new(Mutex::new(Some(Storage::default()))),
         }
     }
 
-    /// overwrite represents should the states should always be replaced 
+    /// overwrite represents should the states should always be replaced
     /// even the args provided are None.
-    pub fn save(&self, raft_state: Option<Vec<u8>>, snapshot: Option<Vec<u8>>, overwrite: bool) -> bool {
+    pub fn save(
+        &self,
+        raft_state: Option<Vec<u8>>,
+        snapshot: Option<Vec<u8>>,
+        overwrite: bool,
+    ) -> bool {
         let mut guard = self.storage.lock().unwrap();
         let storage = match guard.as_mut() {
             None => return false,
-            Some(s) => s
+            Some(s) => s,
         };
-        
+
         if raft_state.is_some() || overwrite {
             storage.raft_state = raft_state;
         }
@@ -51,8 +56,9 @@ impl Persister {
 /// This function is provided for the tester.
 /// You are not supposed to call it.
 #[cfg(test)]
-pub fn make_persister(persister: Persister) 
-    -> Result<(Persister, Option<Vec<u8>>, Option<Vec<u8>>), String> {
+pub fn make_persister(
+    persister: Persister,
+) -> Result<(Persister, Option<Vec<u8>>, Option<Vec<u8>>), String> {
     use std::time::Duration;
     let mut tries = 0;
     let mut guard = loop {
@@ -64,7 +70,8 @@ pub fn make_persister(persister: Persister)
                     std::thread::sleep(Duration::from_millis(100));
                 } else {
                     return Err("Unable to lock Persister for a long time, \
-                        expect no longer than 1 sec".to_string());
+                        expect no longer than 1 sec"
+                        .to_string());
                 }
             }
         }
@@ -73,7 +80,7 @@ pub fn make_persister(persister: Persister)
     let raft_state = storage.raft_state.take();
     let snapshot = storage.snapshot.take();
     let new = Persister {
-        storage: Arc::new(Mutex::new(Some(storage)))
+        storage: Arc::new(Mutex::new(Some(storage))),
     };
     Ok((new, raft_state, snapshot))
 }
@@ -81,5 +88,5 @@ pub fn make_persister(persister: Persister)
 #[derive(Debug, Default, Deserialize)]
 pub struct RaftState {
     pub raft_info: RaftInfo,
-    pub logs_info: LogsInfo
+    pub logs_info: LogsInfo,
 }

@@ -2,14 +2,25 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use std::{sync::{
-    atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering}, 
-    Arc
-}, time::Duration};
+use std::{
+    sync::{
+        atomic::{
+            AtomicBool, AtomicU32, AtomicU64,
+            AtomicUsize, Ordering,
+        },
+        Arc,
+    },
+    time::Duration,
+};
 use tokio::sync::{mpsc as tk_mpsc, RwLock};
 
 use crate::{
-    client::Client, err::{DISCONNECTED, PEER_NOT_FOUND, TIMEOUT}, server::Server, CallResult, Idx, Key, Msg, RpcReq, UbRx
+    client::Client,
+    err::{
+        DISCONNECTED, PEER_NOT_FOUND, TIMEOUT,
+    },
+    server::Server,
+    CallResult, Idx, Key, Msg, RpcReq, UbRx,
 };
 
 use super::UbTx;

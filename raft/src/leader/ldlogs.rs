@@ -2,11 +2,14 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use std::{ops::RangeInclusive, sync::{Arc, RwLock}};
+use std::{
+    ops::RangeInclusive,
+    sync::{Arc, RwLock},
+};
 
 use crate::{
-    info, 
-    logs::{LogInfo, Logs}, 
+    info,
+    logs::{LogInfo, Logs},
     service::AppendEntriesType,
 };
 
@@ -14,7 +17,7 @@ use crate::{
 pub struct LdLogs {
     #[cfg(not(feature = "no_debug"))]
     me: usize,
-    logs: Arc<RwLock<Option<Logs>>>
+    logs: Arc<RwLock<Option<Logs>>>,
 }
 
 pub struct ReplLogs {
@@ -22,12 +25,12 @@ pub struct ReplLogs {
     me: usize,
     #[cfg(not(feature = "no_debug"))]
     to: usize,
-    logs: Arc<RwLock<Option<Logs>>>
+    logs: Arc<RwLock<Option<Logs>>>,
 }
 
 pub struct ReplQueryRes {
     pub lci: usize,
-    pub entry_type: AppendEntriesType
+    pub entry_type: AppendEntriesType,
 }
 
 macro_rules! ld_logs_method {
@@ -56,19 +59,21 @@ impl LdLogs {
 
 impl serde::Serialize for LdLogs {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-        where
-            S: serde::Serializer {
+    where
+        S: serde::Serializer,
+    {
         let guard = self.logs.read().unwrap();
         let logs = guard.as_ref().unwrap();
         logs.serialize(serializer)
     }
 }
 
-/// All ReplLogs functions return a Result, Err represents that the Logs 
+/// All ReplLogs functions return a Result, Err represents that the Logs
 /// is no longer held by the leader.
 impl ReplLogs {
     pub fn index_term(&self, index: usize) -> Result<Option<usize>, ()> {
-        self.logs.read()
+        self.logs
+            .read()
             .unwrap()
             .as_ref()
             .map(|logs| logs.index_term(index))
@@ -76,7 +81,8 @@ impl ReplLogs {
     }
 
     pub fn logs_range(&self) -> Result<RangeInclusive<usize>, ()> {
-        self.logs.read()
+        self.logs
+            .read()
             .unwrap()
             .as_ref()
             .map(|logs| logs.logs_range())
@@ -84,38 +90,35 @@ impl ReplLogs {
     }
 
     pub fn repl_get(&self, next_index: usize) -> Result<ReplQueryRes, ()> {
-        info!("{self}: repl_get, next_index = {next_index}, my range = {:?}", self.logs_range());
+        info!(
+            "{self}: repl_get, next_index = {next_index}, my range = {:?}",
+            self.logs_range()
+        );
         debug_assert!(next_index >= 1);
         let logs_guard = self.logs.read().unwrap();
         let logs = match logs_guard.as_ref() {
             None => return Err(()),
-            Some(l) => l
+            Some(l) => l,
         };
         let (lci, lli) = (logs.lci(), logs.lli());
-        
+
         let entry_type = if next_index > lli {
             AppendEntriesType::HeartBeat
         } else {
             // TODO: snapshot
             AppendEntriesType::Entries {
-                prev: logs.get(next_index-1)
-                    .map(LogInfo::from).unwrap(),
-                entries: logs.get_range(&(next_index..)).unwrap().to_vec()
+                prev: logs.get(next_index - 1).map(LogInfo::from).unwrap(),
+                entries: logs.get_range(&(next_index..)).unwrap().to_vec(),
             }
         };
-        
-        Ok(ReplQueryRes {
-            lci,
-            entry_type
-        })
+
+        Ok(ReplQueryRes { lci, entry_type })
     }
 }
 
 impl Into<Logs> for LdLogs {
     fn into(self) -> Logs {
-        self.logs.write().unwrap()
-            .take()
-            .unwrap()
+        self.logs.write().unwrap().take().unwrap()
     }
 }
 
@@ -124,7 +127,7 @@ impl From<(usize, Logs)> for LdLogs {
     fn from((me, logs): (usize, Logs)) -> Self {
         Self {
             me,
-            logs: Arc::new(RwLock::new(Some(logs)))
+            logs: Arc::new(RwLock::new(Some(logs))),
         }
     }
 }
@@ -135,7 +138,7 @@ impl From<(usize, &LdLogs)> for ReplLogs {
         Self {
             me: ld_logs.me,
             to,
-            logs: ld_logs.logs.clone()
+            logs: ld_logs.logs.clone(),
         }
     }
 }
@@ -144,7 +147,7 @@ impl From<(usize, &LdLogs)> for ReplLogs {
 impl From<Logs> for LdLogs {
     fn from(logs: Logs) -> Self {
         Self {
-            logs: Arc::new(RwLock::new(Some(logs)))
+            logs: Arc::new(RwLock::new(Some(logs))),
         }
     }
 }
@@ -153,7 +156,7 @@ impl From<Logs> for LdLogs {
 impl From<&LdLogs> for ReplLogs {
     fn from(ld_logs: &LdLogs) -> Self {
         Self {
-            logs: ld_logs.logs.clone()
+            logs: ld_logs.logs.clone(),
         }
     }
 }

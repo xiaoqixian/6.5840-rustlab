@@ -2,7 +2,20 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use crate::{common::{self, RPC_FAIL_RETRY}, debug, event::Event, info, leader::ldlogs::ReplQueryRes, logs::LogInfo, role::RoleEvQueue, service::{AppendEntriesArgs, AppendEntriesReply, AppendEntriesType, EntryStatus, QueryEntryArgs, QueryEntryReply}, utils::Peer};
+use crate::{
+    common::{self, RPC_FAIL_RETRY},
+    debug,
+    event::Event,
+    info,
+    leader::ldlogs::ReplQueryRes,
+    logs::LogInfo,
+    role::RoleEvQueue,
+    service::{
+        AppendEntriesArgs, AppendEntriesReply, AppendEntriesType, EntryStatus, QueryEntryArgs,
+        QueryEntryReply,
+    },
+    utils::Peer,
+};
 
 use super::{counter::ReplCounter, ldlogs::ReplLogs};
 
@@ -14,14 +27,19 @@ pub struct Replicator {
     peer_id: usize,
     ev_q: RoleEvQueue,
     next_index: usize,
-    repl_counter: ReplCounter
+    repl_counter: ReplCounter,
 }
 
 impl Replicator {
-    pub fn new(me: usize, term: usize, logs: ReplLogs,
-        peer: Peer, ev_q: RoleEvQueue, next_index: usize, 
-        repl_counter: ReplCounter) -> Self 
-    {
+    pub fn new(
+        me: usize,
+        term: usize,
+        logs: ReplLogs,
+        peer: Peer,
+        ev_q: RoleEvQueue,
+        next_index: usize,
+        repl_counter: ReplCounter,
+    ) -> Self {
         Self {
             me,
             term,
@@ -30,7 +48,7 @@ impl Replicator {
             peer,
             ev_q,
             next_index,
-            repl_counter
+            repl_counter,
         }
     }
 
@@ -46,39 +64,39 @@ impl Replicator {
             info!("{self}: match_index search between [{l}, {r}]");
 
             'round: while l <= r {
-                let mid = l + (r - l)/2;
+                let mid = l + (r - l) / 2;
                 let mid_term = match self.logs.index_term(mid)? {
-                    // A new snapshot is taken, so the term cannot be 
+                    // A new snapshot is taken, so the term cannot be
                     // indexed.
                     None => continue 'search,
-                    Some(term) => term
+                    Some(term) => term,
                 };
 
                 let args = QueryEntryArgs {
                     term: self.term,
-                    log_info: LogInfo::new(mid, mid_term)
+                    log_info: LogInfo::new(mid, mid_term),
                 };
-                
-                let reply = match self.peer.try_call::<_, QueryEntryReply, ()>(
-                    common::QUERY_ENTRY,
-                    &args,
-                    RPC_FAIL_RETRY
-                ).await {
+
+                let reply = match self
+                    .peer
+                    .try_call::<_, QueryEntryReply, ()>(common::QUERY_ENTRY, &args, RPC_FAIL_RETRY)
+                    .await
+                {
                     None => {
                         // tokio::time::sleep(common::NET_FAIL_WAIT).await;
                         continue 'round;
-                    },
-                    Some(r) => r
+                    }
+                    Some(r) => r,
                 };
 
                 match reply {
                     QueryEntryReply::Exist => {
                         target = mid;
                         l = mid + 1;
-                    },
+                    }
                     QueryEntryReply::NotExist => {
                         r = mid - 1;
-                    },
+                    }
                 }
             }
 
@@ -96,53 +114,53 @@ impl Replicator {
         'repl: loop {
             hb_ticker.tick().await;
 
-            let ReplQueryRes { lci, entry_type } = 
-                self.logs.repl_get(self.next_index)?;
+            let ReplQueryRes { lci, entry_type } = self.logs.repl_get(self.next_index)?;
 
             let next_next_index = match &entry_type {
                 AppendEntriesType::HeartBeat => self.next_index,
-                AppendEntriesType::Entries {entries,..} => 
-                    entries.last().unwrap().index + 1
+                AppendEntriesType::Entries { entries, .. } => entries.last().unwrap().index + 1,
             };
 
             let args = AppendEntriesArgs {
                 from: self.me,
                 term: self.term,
                 lci,
-                entry_type
+                entry_type,
             };
 
             // this may take very long time,
-            // call only returns None when the leader is shut down, 
+            // call only returns None when the leader is shut down,
             // in which case we let the replicator break the loop and exit.
-            let reply = match self.peer.call::<_, AppendEntriesReply, ()>(
-                common::APPEND_ENTRIES,
-                &args
-            ).await {
+            let reply = match self
+                .peer
+                .call::<_, AppendEntriesReply, ()>(common::APPEND_ENTRIES, &args)
+                .await
+            {
                 None => break 'repl,
-                Some(r) => r
+                Some(r) => r,
             };
-            
+
             match reply.entry_status {
                 EntryStatus::Stale { term } => {
                     if term > self.term {
                         debug!("{self}: {} said im a stale leader", self.peer_id);
-                        let _ = self.ev_q.put(Event::StaleLeader {
-                            new_term: term
-                        });
+                        let _ = self.ev_q.put(Event::StaleLeader { new_term: term });
                         break 'repl;
                     }
-                },
+                }
                 EntryStatus::Confirmed => {
                     if self.next_index < next_next_index {
-                        self.repl_counter.confirm(self.peer_id, next_next_index-1);
-                        info!("{self}: update next_index {} -> {next_next_index}", self.next_index);
+                        self.repl_counter.confirm(self.peer_id, next_next_index - 1);
+                        info!(
+                            "{self}: update next_index {} -> {next_next_index}",
+                            self.next_index
+                        );
                         self.next_index = next_next_index;
                     }
-                },
+                }
                 EntryStatus::Mismatched => {
                     self.next_index = self.match_index().await? + 1;
-                },
+                }
                 EntryStatus::Hold => {}
             }
         }

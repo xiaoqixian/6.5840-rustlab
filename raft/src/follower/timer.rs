@@ -8,13 +8,14 @@ use crate::UbTx;
 
 /// A restettable timer
 pub struct Timer {
-    tx: UbTx<()>
+    tx: UbTx<()>,
 }
 
 impl Timer {
-    pub fn new<F, G>(action: F, dur_gen: G) -> Self 
-        where F: Send + 'static + FnOnce(),
-              G: Send + 'static + Fn() -> Duration
+    pub fn new<F, G>(action: F, dur_gen: G) -> Self
+    where
+        F: Send + 'static + FnOnce(),
+        G: Send + 'static + Fn() -> Duration,
     {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
 
@@ -42,7 +43,6 @@ impl Timer {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
@@ -54,9 +54,7 @@ mod tests {
         let f = move || {
             tx.send(()).unwrap();
         };
-        let g = || {
-            Duration::from_secs(3)
-        };
+        let g = || Duration::from_secs(3);
 
         let t0 = Instant::now();
         let t = Timer::new(f, g);

@@ -6,15 +6,19 @@ use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
 use serde::{Serialize, ser::SerializeStruct};
 
 use crate::{
-    candidate::VoteStatus, debug, event::{Event, TO_FOLLOWER}, info, raft::RaftCore, role::{RoleCore, RoleEvQueue, Trans}, service::{
-        AppendEntriesArgs,
-        AppendEntriesReply,
-        EntryStatus,
-        QueryEntryArgs,
-        QueryEntryReply,
-        RequestVoteArgs,
-        RequestVoteReply
-    }, utils::Peer, warn, ApplyMsg, };
+    candidate::VoteStatus,
+    debug,
+    event::{Event, TO_FOLLOWER},
+    info,
+    raft::RaftCore,
+    role::{RoleCore, RoleEvQueue, Trans},
+    service::{
+        AppendEntriesArgs, AppendEntriesReply, EntryStatus, QueryEntryArgs, QueryEntryReply,
+        RequestVoteArgs, RequestVoteReply,
+    },
+    utils::Peer,
+    warn, ApplyMsg,
+};
 
 mod replicator;
 mod counter;

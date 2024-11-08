@@ -5,7 +5,17 @@
 use std::time::Duration;
 
 use crate::{
-    candidate::VoteStatus, common, debug, event::{Event, TO_CANDIDATE}, logs::Logs, raft::RaftCore, role::{RoleCore, RoleEvQueue, Trans}, service::{AppendEntriesArgs, AppendEntriesReply, AppendEntriesType, EntryStatus, QueryEntryArgs, QueryEntryReply, RequestVoteArgs, RequestVoteReply}, warn, ApplyMsg, OneTx, 
+    candidate::VoteStatus,
+    common, debug,
+    event::{Event, TO_CANDIDATE},
+    logs::Logs,
+    raft::RaftCore,
+    role::{RoleCore, RoleEvQueue, Trans},
+    service::{
+        AppendEntriesArgs, AppendEntriesReply, AppendEntriesType, EntryStatus, QueryEntryArgs,
+        QueryEntryReply, RequestVoteArgs, RequestVoteReply,
+    },
+    warn, ApplyMsg, OneTx,
 };
 
 mod timer;

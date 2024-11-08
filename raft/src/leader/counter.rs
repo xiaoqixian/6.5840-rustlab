@@ -2,7 +2,10 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 use bit_vec::BitVec;
 
@@ -15,15 +18,12 @@ struct CounterImpl {
     offset: usize,
     indices: Vec<BitVec>,
     ev_q: RoleEvQueue,
-    active: Arc<AtomicBool>
+    active: Arc<AtomicBool>,
 }
 
 enum ReplCounterEv {
     WatchIdx(usize),
-    Confirm {
-        peer_id: usize,
-        index: usize
-    }
+    Confirm { peer_id: usize, index: usize },
 }
 
 #[derive(Clone)]
@@ -33,17 +33,23 @@ pub struct ReplCounter {
 }
 
 impl ReplCounter {
-    pub fn new(me: usize, n: usize, lci: usize, ev_q: RoleEvQueue, active: Arc<AtomicBool>) -> Self {
+    pub fn new(
+        me: usize,
+        n: usize,
+        lci: usize,
+        ev_q: RoleEvQueue,
+        active: Arc<AtomicBool>,
+    ) -> Self {
         let counter = CounterImpl {
             me,
             n,
-            quorum: n/2 + 1,
-            // the first log is the noop log that is held by all nodes, 
+            quorum: n / 2 + 1,
+            // the first log is the noop log that is held by all nodes,
             // so the first node is considered committed by all.
             offset: lci + 1,
             indices: Vec::new(),
             ev_q,
-            active
+            active,
         };
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(counter.start(rx));
@@ -71,8 +77,7 @@ impl CounterImpl {
         while let Some(ev) = rx.recv().await {
             match ev {
                 ReplCounterEv::WatchIdx(idx) => self.watch_idx(idx),
-                ReplCounterEv::Confirm { peer_id, index } => 
-                    self.confirm(peer_id, index)
+                ReplCounterEv::Confirm { peer_id, index } => self.confirm(peer_id, index),
             }
 
             if !self.active.load(Ordering::Relaxed) {
@@ -95,8 +100,8 @@ impl CounterImpl {
         if index < self.offset {
             return;
         }
-        // debug_assert!(self.indices.len() >= range.len(), 
-        //     "Unexpected confirm range, expect {:?}, got {range:?}", 
+        // debug_assert!(self.indices.len() >= range.len(),
+        //     "Unexpected confirm range, expect {:?}, got {range:?}",
         //     Range {start: self.offset, end: self.offset + self.indices.len()});
 
         let mut new_offset = self.offset;
@@ -110,8 +115,11 @@ impl CounterImpl {
         }
 
         if new_offset != self.offset {
-            debug!("Counter[{}]: update offset {} -> {new_offset}", self.me, self.offset);
-            let _ = self.ev_q.put(Event::UpdateCommit(new_offset-1));
+            debug!(
+                "Counter[{}]: update offset {} -> {new_offset}",
+                self.me, self.offset
+            );
+            let _ = self.ev_q.put(Event::UpdateCommit(new_offset - 1));
             let new_start = new_offset - self.offset;
             self.offset = new_offset;
             self.indices = self.indices.drain(new_start..).collect();
