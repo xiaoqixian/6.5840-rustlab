@@ -8,7 +8,8 @@ use std::{sync::Arc, time::Duration};
 use colored::Colorize;
 use tokio::sync::Mutex;
 
-use super::{Tester, ELECTION_TIMEOUT, timeout_test};
+use super::{Tester, ELECTION_TIMEOUT, timeout_test, Result};
+use crate::fatal;
 
 macro_rules! debug {
     ($($args: expr),*) => {
@@ -20,15 +21,15 @@ macro_rules! debug {
     }
 }
 
-macro_rules! fatal {
-    ($($args: expr), *) => {
-        return Err(format!($($args),*))
-    }
-}
+// macro_rules! fatal {
+//     ($($args: expr), *) => {
+//         return Err(format!($($args),*))
+//     }
+// }
 
 #[tokio::test]
 async fn test3b_basic_agree() {
-    async fn basic_agree() -> Result<(), String> {
+    async fn basic_agree() -> Result<()> {
         const N: usize = 3;
         const RELIABLE: bool = true;
         const SNAPSHOT: bool = false;
@@ -41,7 +42,7 @@ async fn test3b_basic_agree() {
         for index in (base+1)..=(base+3) {
             let (nc, _) = tester.n_committed(index).await?;
             if nc > 0 {
-                return Err("Some have committed before start".to_string());
+                fatal!("Some have committed before start");
             }
 
             let xindex = tester.must_submit_cmd(&(index as u32 * 100), N, false).await?;
@@ -58,7 +59,7 @@ async fn test3b_basic_agree() {
 
 #[tokio::test]
 async fn test3b_rpc_byte() {
-    async fn rpc_byte() -> Result<(), String> {
+    async fn rpc_byte() -> Result<()> {
         const N: usize = 3;
         const RELIABLE: bool = true;
         const SNAPSHOT: bool = false;
@@ -101,7 +102,7 @@ async fn test3b_rpc_byte() {
 
 #[tokio::test]
 async fn test3b_follower_failure() {
-    async fn follower_failure() -> Result<(), String> {
+    async fn follower_failure() -> Result<()> {
         const N: usize = 3;
         const RELIABLE: bool = true;
         const SNAPSHOT: bool = false;
@@ -111,8 +112,8 @@ async fn test3b_follower_failure() {
         macro_rules! must_continue {
             ($prev: expr, $curr: expr) => {
                 if $curr != $prev + 1 {
-                    return Err(format!("Inconsecutive command index,\
-                            expect {}, got {}", $prev + 1, $curr));
+                    fatal!("Inconsecutive command index,\
+                            expect {}, got {}", $prev + 1, $curr);
                 }
             }
         }
@@ -158,7 +159,7 @@ async fn test3b_follower_failure() {
         // cmd_idx3 should not be committed
         let (n, _) = tester.n_committed(cmd_idx3).await?;
         if n > 0 {
-            Err(format!("Command {cmd_idx3} is committed while majority of nodes are disconnected"))
+            fatal!("Command {cmd_idx3} is committed while majority of nodes are disconnected");
         } else {
             Ok(())
         }
@@ -168,7 +169,7 @@ async fn test3b_follower_failure() {
 
 #[tokio::test]
 async fn test3b_leader_failure() {
-    async fn leader_failure() -> Result<(), String> {
+    async fn leader_failure() -> Result<()> {
         const N: usize = 3;
         const RELIABLE: bool = true;
         const SNAPSHOT: bool = false;
@@ -213,7 +214,7 @@ async fn test3b_leader_failure() {
 
 #[tokio::test]
 async fn test3b_fail_agree() {
-    async fn fail_agree() -> Result<(), String> {
+    async fn fail_agree() -> Result<()> {
         const N: usize = 3;
         const RELIABLE: bool = true;
         const SNAPSHOT: bool = false;
@@ -251,7 +252,7 @@ async fn test3b_fail_agree() {
 /// should be committed in such a circumstance.
 #[tokio::test]
 async fn test3b_fail_no_agree() {
-    async fn fail_no_agree() -> Result<(), String> {
+    async fn fail_no_agree() -> Result<()> {
         const N: usize = 5;
         const RELIABLE: bool = true;
         const SNAPSHOT: bool = false;
@@ -332,7 +333,7 @@ async fn test3b_fail_no_agree() {
 /// This operation will be tried for multiple times before the tester panics.
 #[tokio::test]
 async fn test3b_concurrent_starts() {
-    async fn concurrent_starts() -> Result<(), String> {
+    async fn concurrent_starts() -> Result<()> {
         const N: usize = 3;
         const RELIABLE: bool = true;
         const SNAPSHOT: bool = false;
@@ -411,7 +412,7 @@ async fn test3b_concurrent_starts() {
 
 #[tokio::test]
 async fn test3b_rejoin() {
-    async fn rejoin() -> Result<(), String> {
+    async fn rejoin() -> Result<()> {
         const N: usize = 3;
         const RELIABLE: bool = true;
         const SNAPSHOT: bool = false;
@@ -460,7 +461,7 @@ async fn test3b_rejoin() {
 
 #[tokio::test]
 async fn test3b_backup() {
-    async fn backup() -> Result<(), String> {
+    async fn backup() -> Result<()> {
         const N: usize = 5;
         const RELIABLE: bool = true;
         const SNAPSHOT: bool = false;
@@ -552,7 +553,7 @@ async fn test3b_backup() {
 /// Then check how many RPCs are sent.
 #[tokio::test]
 async fn test3b_count() {
-    async fn count() -> Result<(), String> {
+    async fn count() -> Result<()> {
         const N: usize = 3;
         const RELIABLE: bool = true;
         const SNAPSHOT: bool = false;

@@ -53,13 +53,33 @@ impl Persister {
     }
 }
 
+#[cfg(test)]
+impl Persister {
+    pub fn raft_state_size(&self) -> usize {
+        self.storage.lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .raft_state
+            .as_ref()
+            .map(|s| s.len())
+            .or(Some(0))
+            .unwrap()
+    }
+}
+
 /// This function is provided for the tester.
 /// You are not supposed to call it.
+#[cfg(test)] 
+use crate::tests::Result;
 #[cfg(test)]
 pub fn make_persister(
     persister: Persister,
-) -> Result<(Persister, Option<Vec<u8>>, Option<Vec<u8>>), String> {
+) -> Result<(Persister, Option<Vec<u8>>, Option<Vec<u8>>)> {
     use std::time::Duration;
+
+    use crate::fatal;
+
     let mut tries = 0;
     let mut guard = loop {
         match persister.storage.try_lock() {
@@ -69,9 +89,8 @@ pub fn make_persister(
                     tries += 1;
                     std::thread::sleep(Duration::from_millis(100));
                 } else {
-                    return Err("Unable to lock Persister for a long time, \
-                        expect no longer than 1 sec"
-                        .to_string());
+                    fatal!("Unable to lock Persister for a long time, \
+                        expect no longer than 1 sec");
                 }
             }
         }

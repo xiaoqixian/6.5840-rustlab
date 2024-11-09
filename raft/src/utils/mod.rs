@@ -5,12 +5,3 @@
 mod peer;
 
 pub use peer::Peer;
-
-#[macro_export]
-macro_rules! fatal {
-    ($($args: expr),*) => {{
-        use colored::Colorize;
-        let msg = format!($($args),*).red();
-        panic!("{msg}")
-    }}
-}

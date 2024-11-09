@@ -9,11 +9,12 @@ use tokio::sync::Mutex;
 #[cfg(not(feature = "no_debug"))]
 use colored::Colorize;
 
-use crate::debug;
+use crate::{debug, fatal};
 
 use super::{
     Tester, timeout_test, ELECTION_TIMEOUT, 
-    utils::{gen_bool, randu32, randu64, randusize}
+    utils::{gen_bool, randu32, randu64, randusize},
+    Result
 };
 
 macro_rules! debug {
@@ -34,7 +35,7 @@ macro_rules! debug {
 
 #[tokio::test]
 async fn test3c_persist1() {
-    async fn persist1() -> Result<(), String> {
+    async fn persist1() -> Result<()> {
         const N: usize = 3;
         let mut tester = Tester::<u32>::new(N, true, false).await?;
         tester.begin("Test 3C: basic persistence").await;
@@ -80,7 +81,7 @@ async fn test3c_persist1() {
 
 #[tokio::test]
 async fn test3c_persist2() {
-    async fn persist2() -> Result<(), String> {
+    async fn persist2() -> Result<()> {
         const N: usize = 5;
         let mut tester = Tester::<u32>::new(N, true, false).await?;
         tester.begin("Test 3C: more persistence").await;
@@ -126,7 +127,7 @@ async fn test3c_persist2() {
 
 #[tokio::test]
 async fn test3c_persist3() {
-    async fn persist3() -> Result<(), String> {
+    async fn persist3() -> Result<()> {
         const N: usize = 3;
         let mut tester = Tester::<u32>::new(N, true, false).await?;
         tester.begin("Test 3C: partitioned leader and one follower crash, leader restarts").await;
@@ -171,7 +172,7 @@ async fn test3c_persist3() {
 // haven't been committed yet.
 #[tokio::test]
 async fn test3c_figure8() {
-    async fn figure8() -> Result<(), String> {
+    async fn figure8() -> Result<()> {
         const N: usize = 5;
         const QUORUM: usize = (N + 1) / 2;
         let mut tester = Tester::<u32>::new(N, true, false).await?;
@@ -227,7 +228,7 @@ async fn test3c_figure8() {
 
 #[tokio::test]
 async fn test3c_unreliable_agree() {
-    async fn unreliable_agree() -> Result<(), String> {
+    async fn unreliable_agree() -> Result<()> {
         const N: usize = 5;
         let mut tester = Tester::<u32>::new(N, false, false).await?;
         tester.begin("Test 3C: unreliable agreement").await;
@@ -268,7 +269,7 @@ async fn test3c_unreliable_agree() {
 
 #[tokio::test]
 async fn test3c_figure8_unreliable() {
-    async fn figure8_unreliable() -> Result<(), String> {
+    async fn figure8_unreliable() -> Result<()> {
         const N: usize = 5;
         const QUORUM: usize = (N + 1) / 2;
         let mut tester = Tester::<u32>::new(N, false, false).await?;
@@ -346,7 +347,7 @@ async fn test3c_figure8_unreliable() {
         debug!("connect all");
 
         let cmd2 = randu32() % 10000;
-        debug!("All must commit cmd2 {cmd2}");;
+        debug!("All must commit cmd2 {cmd2}");
         tester.must_submit_cmd(&cmd2, N, true).await?;
         tester.end().await
     }
@@ -358,7 +359,7 @@ async fn test3c_figure8_unreliable() {
 /// then observe the command getting committed at that command index.
 /// At the same time, randomly crash and restart some nodes.
 /// Expect that all workers observe a same series of commands.
-async fn internal_churn(reliable: bool) -> Result<(), String> {
+async fn internal_churn(reliable: bool) -> Result<()> {
     const N: usize = 5;
     let mut tester = Tester::<u32>::new(N, reliable, false).await?;
     tester.begin(
@@ -379,7 +380,7 @@ async fn internal_churn(reliable: bool) -> Result<(), String> {
     /// While the flag is true, keep letting raft nodes submit commands.
     /// Then wait for the command to be committed, but not wait forever.
     /// If the command is committed, then push it to Vec that will be returned.
-    async fn worker(ctx: Context) -> Result<Vec<u32>, String> {
+    async fn worker(ctx: Context) -> Result<Vec<u32>> {
         let mut ret = Vec::new();
         
         while ctx.flag.load(Ordering::Relaxed) {
@@ -470,7 +471,7 @@ async fn internal_churn(reliable: bool) -> Result<(), String> {
 
         let values = join_set.join_all().await
             .into_iter()
-            .collect::<Result<Vec<Vec<u32>>, String>>()?
+            .collect::<Result<Vec<Vec<u32>>>>()?
             .into_iter()
             .flat_map(|vals| vals.into_iter())
             .collect::<Vec<_>>();
@@ -494,7 +495,7 @@ async fn internal_churn(reliable: bool) -> Result<(), String> {
     // iterate all values, make sure one of them is actually committed
     for val in values.into_iter() {
         if !really_committed.contains(&val) {
-            return Err(format!("Command {val} is not found in really committed commands"));
+            fatal!("Command {val} is not found in really committed commands");
         }
     }
 

@@ -2,7 +2,6 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-
 pub mod raft;
 mod persist;
 mod follower;
@@ -32,4 +31,4 @@ pub enum ApplyMsg {
 }
 
 #[cfg(test)]
-pub mod tests;
+mod tests;

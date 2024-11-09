@@ -13,6 +13,9 @@ mod test_3b;
 #[cfg(test)]
 mod test_3c;
 
+#[cfg(test)]
+mod test_3d;
+
 use std::{
     collections::HashMap,
     fmt::{Debug, Display},
@@ -36,6 +39,19 @@ use labrpc::network::Network;
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::{sync::Mutex, task::JoinHandle};
 
+/// In async rust, the panic does work as I expected. 
+/// It does not stop the whole program, so I let all test functions
+/// return this Error, so the tester can stop in time.
+/// The PanicErr help record the panic location file name and line number.
+#[derive(Clone)]
+pub struct PanicErr {
+    pub msg: String,
+    pub file: &'static str,
+    pub line: u32
+}
+
+pub type Result<T> = std::result::Result<T, PanicErr>;
+
 macro_rules! greet {
     ($($args: expr),*) => {{
         // let msg = format!($($args),*).truecolor(178,225,167);
@@ -55,8 +71,30 @@ macro_rules! debug {
     }
 }
 
+macro_rules! panic_err {
+    ($($args: expr), +) => {
+        crate::tests::PanicErr {
+            msg: format!($($args), +),
+            file: file!(),
+            line: line!()
+        }
+    }
+}
+
+#[macro_export]
+macro_rules! fatal {
+    ($($args: expr), *) => {
+        return Err(crate::tests::PanicErr {
+            msg: format!($($args),*),
+            file: file!(),
+            line: line!()
+        })
+    }
+}
+
 const ELECTION_TIMEOUT: Duration = Duration::from_secs(1);
 const TEST_TIME_LIMIT: Duration = Duration::from_secs(120);
+const SNAPSHOT_INTERVAL: usize = 10;
 
 struct NodeCore {
     applier_handle: JoinHandle<()>,
@@ -66,7 +104,7 @@ struct NodeCore {
 
 struct Node {
     id: usize,
-    persister: Persister,
+    pub persister: Persister,
     raft_state: Option<Vec<u8>>,
     snapshot: Option<Vec<u8>>,
     core: Option<NodeCore>,
@@ -75,7 +113,7 @@ struct Node {
 
 struct Logs<T> {
     logs: Vec<Vec<T>>,
-    apply_err: Vec<Option<String>>,
+    apply_err: Vec<Option<PanicErr>>,
     max_cmd_idx: usize,
 }
 
@@ -107,7 +145,7 @@ impl<T> Tester<T>
 where
     T: WantedCmd,
 {
-    pub async fn new(n: usize, reliable: bool, snapshot: bool) -> Result<Self, String> {
+    pub async fn new(n: usize, reliable: bool, snapshot: bool) -> Result<Self> {
         let mut tester = Self {
             n,
             net: Network::new(n).reliable(reliable).long_delay(true),
@@ -143,7 +181,7 @@ where
         self.start = std::time::Instant::now();
     }
 
-    async fn end(&mut self) -> Result<(), String> {
+    async fn end(&mut self) -> Result<()> {
         self.finished.store(true, Ordering::Release);
 
         let t = self.start.elapsed();
@@ -168,7 +206,7 @@ where
         Ok(())
     }
 
-    async fn crash_node(&mut self, id: usize) -> Result<(), String> {
+    async fn crash_node(&mut self, id: usize) -> Result<()> {
         let node = &mut self.nodes[id];
         if let Some(core) = node.core.take() {
             // replace the original persister with the new created one,
@@ -181,11 +219,11 @@ where
             core.applier_killed.store(true, Ordering::Relaxed);
             if let Err(_) = tokio::time::timeout(Duration::from_secs(1), core.applier_handle).await
             {
-                return Err("Applier long time no return".to_string());
+                fatal!("Applier long time no return");
             }
 
             if let Err(_) = tokio::time::timeout(Duration::from_secs(1), core.raft.kill()).await {
-                return Err("Raft kill timeout, expect no more than 1sec".to_string());
+                fatal!("Raft kill timeout, expect no more than 1sec");
             }
         }
 
@@ -200,7 +238,7 @@ where
         id: usize,
         snapshot: bool,
         restart: bool,
-    ) -> Result<bool, String> {
+    ) -> Result<bool> {
         if self.nodes[id].core.is_some() {
             if !restart {
                 return Ok(false);
@@ -243,9 +281,7 @@ where
         {
             Ok(raft) => raft,
             Err(_) => {
-                return Err(format!(
-                    "Raft instantiation timeout, expect no more than 1sec"
-                ))
+                fatal!("Raft instantiation timeout, expect no more than 1sec");
             }
         };
 
@@ -274,7 +310,7 @@ where
         Ok(true)
     }
 
-    async fn crash_one(&mut self, id: usize) -> Result<(), String> {
+    async fn crash_one(&mut self, id: usize) -> Result<()> {
         let node = &mut self.nodes[id];
         if node.connected {
             node.connected = false;
@@ -288,7 +324,7 @@ where
     /// In case of re-election, this check will be performed multiple
     /// times to find a leader, panics when no leader is found.
     /// Return the id of leader that has the newest term.
-    async fn check_one_leader(&self) -> Result<usize, String> {
+    async fn check_one_leader(&self) -> Result<usize> {
         // check for 10 times.
         for _ in 0..10 {
             let ms = (rand::random::<u64>() % 100) + 450;
@@ -305,7 +341,7 @@ where
 
                 if is_leader {
                     if leader_terms.get(&term).is_some() {
-                        return Err(format!("Term {term} has multiple leaders"));
+                        fatal!("Term {term} has multiple leaders");
                     }
                     leader_terms.insert(term, id);
                 }
@@ -315,7 +351,7 @@ where
                 return Ok(max.1);
             }
         }
-        Err(format!("Expect one leader, got none"))
+        fatal!("Expect one leader, got none");
     }
 
     /// Let a specific node start
@@ -331,7 +367,7 @@ where
 
     /// Check if all nodes agree on their terms,
     /// return the term if agree.
-    async fn check_terms(&self) -> Result<usize, String> {
+    async fn check_terms(&self) -> Result<usize> {
         let mut term = None;
 
         for (id, node) in self.nodes.iter().enumerate() {
@@ -340,20 +376,20 @@ where
                 term = match term {
                     Some(term) if term == iterm => Some(term),
                     Some(term) => {
-                        return Err(format!(
-                            "Servers {id} 
-                            with term {iterm} disagree on term {term}"
-                        ))
+                        fatal!("Server {id} with term {iterm} disagree on term {term}");
                     }
                     None => Some(iterm),
                 };
             }
         }
-        term.ok_or("Servers return no term".to_string())
+        match term {
+            Some(term) => Ok(term),
+            None => fatal!("Servers return no term")
+        }
     }
 
     // expect none of the nodes claims to be a leader
-    async fn check_no_leader(&self) -> Result<(), String> {
+    async fn check_no_leader(&self) -> Result<()> {
         for (id, node) in self.nodes.iter().enumerate() {
             if !node.connected || node.core.is_none() {
                 continue;
@@ -361,10 +397,10 @@ where
 
             let (_, is_leader) = node.core.as_ref().unwrap().raft.get_state().await;
             if is_leader {
-                return Err(format!(
-                    "Expected no leader among connected servers, 
+                fatal!(
+                    "Expected no leader among connected servers,\
                     but node {id} claims to be a leader"
-                ));
+                );
             }
         }
         Ok(())
@@ -373,7 +409,7 @@ where
     /// Wait a command with index to be applied by at least `expected` number of
     /// servers.
     /// This will wait forever, so it's usually used with timeout function.
-    async fn wait_commit(&self, index: usize, cmd: &T, expected: usize) -> Result<usize, String> {
+    async fn wait_commit(&self, index: usize, cmd: &T, expected: usize) -> Result<usize> {
         loop {
             match self.n_committed(index).await? {
                 (cnt, Some(cmt_cmd)) => {
@@ -386,7 +422,7 @@ where
         }
     }
 
-    async fn must_submit(&self, cmd: &T, expected: usize, retry: bool) -> Result<usize, String> {
+    async fn must_submit(&self, cmd: &T, expected: usize, retry: bool) -> Result<usize> {
         let cmd_bin = bincode::serialize(&cmd).unwrap();
         loop {
             // iterate all raft nodes, ask them to start a command.
@@ -428,7 +464,7 @@ where
                 Ok(res) => break res,
                 Err(_) => {
                     if !retry {
-                        return Err(format!("One cmd {cmd} failed to reach agreement"));
+                        fatal!("One cmd {cmd} failed to reach agreement");
                     }
                 }
             }
@@ -443,7 +479,7 @@ where
         cmd: &T,
         expected: usize,
         retry: bool,
-    ) -> Result<Option<usize>, String> {
+    ) -> Result<Option<usize>> {
         match tokio::time::timeout(
             Duration::from_secs(10),
             self.must_submit(cmd, expected, retry),
@@ -461,23 +497,23 @@ where
         cmd: &T,
         expected: usize,
         retry: bool,
-    ) -> Result<usize, String> {
+    ) -> Result<usize> {
         match self.submit_cmd(cmd, expected, retry).await? {
             Some(idx) => Ok(idx),
-            None => Err(format!("Submit command {cmd} failed")),
+            None => fatal!("Submit command {cmd} failed"),
         }
     }
 
     /// Check how many nodes think a command at index is committed.
     /// We assume the applied logs are consistent, so we don't check
     /// if their values are equal.
-    async fn n_committed(&self, idx: usize) -> Result<(usize, Option<T>), String> {
+    async fn n_committed(&self, idx: usize) -> Result<(usize, Option<T>)> {
         let mut cnt = 0usize;
         let mut cmd = None;
         let logs = self.logs.lock().await;
         for (i, log) in logs.logs.iter().enumerate() {
-            if let Some(err_msg) = &logs.apply_err[i] {
-                return Err(err_msg.clone());
+            if let Some(err) = &logs.apply_err[i] {
+                return Err(err.clone());
             }
 
             if let Some(cmd_i) = log.get(idx) {
@@ -485,9 +521,10 @@ where
                     None => cmd = Some(cmd_i.clone()),
                     Some(cmd) => {
                         if cmd_i != cmd {
-                            return Err(format!(
-                                "Command {cmd_i} committed by {i} is inconsistent with others command {cmd}"
-                            ));
+                            fatal!(
+                                "Command {cmd_i} committed by {i} is \
+                                inconsistent with others command {cmd}"
+                            );
                         }
                     }
                 }
@@ -508,7 +545,7 @@ where
         index: usize,
         expect: usize,
         start_term: Option<usize>,
-    ) -> Result<Option<T>, String> {
+    ) -> Result<Option<T>> {
         let mut short_break = Duration::from_millis(10);
         for _ in 0..30 {
             let (n, _) = self.n_committed(index).await?;
@@ -533,10 +570,10 @@ where
 
         let (n, cmd) = self.n_committed(index).await?;
         if n < expect {
-            return Err(format!(
+            fatal!(
                 "Only {n} nodes committed command with \
-                    index {index}, expect {expect} nodes committed"
-            ));
+                index {index}, expect {expect} nodes committed"
+            );
         }
         Ok(cmd)
     }
@@ -620,7 +657,7 @@ where
                 }
                 ApplyMsg::Snapshot { .. } if snap => false,
                 _ => {
-                    logs.apply_err[id] = Some("Snapshot unexpected".to_string());
+                    logs.apply_err[id] = Some(panic_err!("Snapshot unexpected"));
                     true
                 }
             };
@@ -637,7 +674,7 @@ where
         cmd_idx: usize,
         cmd: Vec<u8>,
         logs: &mut Logs<T>,
-    ) -> Result<(), ()> {
+    ) -> std::result::Result<(), ()> {
         match Self::cross_check(id, cmd_idx, cmd, &mut logs.logs) {
             Ok(_) => {
                 logs.max_cmd_idx = logs.max_cmd_idx.max(cmd_idx);
@@ -657,7 +694,7 @@ where
         cmd_idx: usize,
         cmd: Vec<u8>,
         logs: &mut Vec<Vec<T>>,
-    ) -> Result<(), String> {
+    ) -> Result<()> {
         let cmd_value = bincode::deserialize_from::<_, T>(&cmd[..]).unwrap();
 
         // the command index can only be equal to the length of the
@@ -666,13 +703,13 @@ where
         // if less, the log is applied before, which is not allowed
         // for a state machine.
         if cmd_idx > logs[id].len() {
-            return Err(format!(
+            fatal!(
                 "Server {id} apply out of order, expect {}, got {cmd_idx}",
                 logs[id].len()
-            ));
+            );
         } else if cmd_idx < logs[id].len() {
             debug!("Server {id} has applied the log {cmd_idx} before, the last applied command index = {}", logs[id].len()-1);
-            return Err(format!("Server {id} has applied the log {cmd_idx} before."));
+            fatal!("Server {id} has applied the log {cmd_idx} before.");
         }
 
         // check all logs of other nodes, if the index exist in the logs
@@ -681,10 +718,10 @@ where
         for (i, log) in logs.iter().enumerate() {
             match log.get(cmd_idx) {
                 Some(val) if *val != cmd_value => {
-                    return Err(format!(
+                    fatal!(
                         "commit index = {cmd_idx}, \
                         server={id} {cmd_value} != server={i} {val}"
-                    ));
+                    );
                 }
                 _ => {}
             }
@@ -701,18 +738,35 @@ impl<T> std::fmt::Display for Applier<T> {
     }
 }
 
+static PANIC_HOOK_SET: AtomicBool = AtomicBool::new(false);
+
 async fn timeout_test<F>(test: F)
 where
-    F: Future<Output = Result<(), String>>,
+    F: Future<Output = Result<()>>,
 {
+    if !PANIC_HOOK_SET.swap(true, Ordering::Relaxed) {
+        std::panic::set_hook(Box::new(|info| {
+            let msg = info.payload().downcast_ref::<String>().unwrap();
+            eprintln!("{msg}");
+        }))
+    }
+
     let r = match tokio::time::timeout(TEST_TIME_LIMIT, test).await {
         Ok(res) => res,
-        Err(_) => Err(format!(
+        Err(_) => Err(panic_err!(
             "Test timeout, expect no more than {} secs",
             TEST_TIME_LIMIT.as_secs()
         )),
     };
-    if let Err(msg) = r {
-        panic!("{}", msg.red());
+
+    if let Err(e) = r {
+        let msg = format!(
+            "thread '{}' panicked at {}:{}\n{}",
+            std::thread::current().name().or(Some("")).unwrap(),
+            e.file,
+            e.line,
+            e.msg
+        ).red();
+        panic!("{msg}");
     }
 }

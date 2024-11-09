@@ -6,7 +6,7 @@ use std::ops::{RangeBounds, RangeInclusive};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{debug, fatal, info};
+use crate::{debug, info};
 
 #[derive(PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub struct LogInfo {
@@ -225,7 +225,7 @@ impl Logs {
         self.lci = lci;
 
         match self.get_range(&apply_range) {
-            None => fatal!("{self}: Invalid range {apply_range:?}, 
+            None => panic!("{self}: Invalid range {apply_range:?}, 
                 expected logs range {:?}", self.logs_range()),
             Some(ets) => ets.into_iter().cloned()
                 .filter_map(LogEntry::into)
