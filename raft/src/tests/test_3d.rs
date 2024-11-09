@@ -93,5 +93,100 @@ where T: Display
 
 #[tokio::test]
 async fn test3d_snapshot_basic() {
-    timeout_test(snap_common("Test 3D: snapshot basic", false, false, false)).await;
+    let t = "Test 3D: snapshot basic";
+    timeout_test(snap_common(t, false, true, false)).await;
+}
+
+#[tokio::test]
+async fn test3d_snapshot_install() {
+    let t = "Test 3D: install snapshot(disconnect)";
+    timeout_test(snap_common(t, true, true, false)).await;
+}
+
+#[tokio::test]
+async fn test3d_snapshot_install_unreliable() {
+    let t = "Test 3D: install snapshot(disconnect + unreliable)";
+    timeout_test(snap_common(t, true, false, false)).await;
+}
+
+#[tokio::test]
+async fn test3d_snapshot_install_crash() {
+    let t = "Test 3D: install snapshot(crash)";
+    timeout_test(snap_common(t, false, true, true)).await;
+}
+
+#[tokio::test]
+async fn test3d_snapshot_install_unreliable_crash() {
+    let t = "Test 3D: install snapshot(unreliable + crash)";
+    timeout_test(snap_common(t, false, false, true)).await;
+}
+
+// do the servers persist the snapshots, and
+// restart using snapshot along with the
+// tail of the log?
+#[tokio::test]
+async fn test3d_snapshot_all_crash() {
+    async fn snapshot_all_crash() -> Result<()> {
+        const N: usize = 3;
+        let mut tester = Tester::<u32>::new(N, true, true).await?;
+        tester.begin("Test 3D: crash and restart all servers").await;
+
+        tester.must_submit_cmd(&randu32(), N, true).await?;
+
+        for _ in 0..5 {
+            let nn = SNAPSHOT_INTERVAL / 2 + randusize() % SNAPSHOT_INTERVAL;
+            for _ in 0..nn {
+                tester.must_submit_cmd(&randu32(), N, true).await?;
+            }
+
+            let index1 = tester.must_submit_cmd(&randu32(), N, true).await?;
+            
+            // restart all
+            for id in 0..N {
+                tester.start_one(id, true, true).await?;
+            }
+
+            let index2 = tester.must_submit_cmd(&randu32(), N, true).await?;
+            if index2 < index1 + 1 {
+                fatal!("index decreased from {index1} to {index2}");
+            }
+        }
+        tester.end().await
+    }
+    timeout_test(snapshot_all_crash()).await;
+}
+
+/// Do servers correctly initialize their in-memory copy of the snapshot,
+/// making sure that future writes to presistent state don't lose state?
+#[tokio::test]
+async fn test3d_snapshot_init() {
+    async fn snapshot_init() -> Result<()> {
+        const N: usize = 3;
+        let mut tester = Tester::<u32>::new(N, true, true).await?;
+        tester.begin("Test 3D: snapshot initialization after crash").await;
+
+        tester.must_submit_cmd(&randu32(), N, true).await?;
+
+        // submit enough commands to create a snapshot
+        for _ in 0..=SNAPSHOT_INTERVAL {
+            tester.must_submit_cmd(&randu32(), N, true).await?;
+        }
+
+        // restart all
+        for id in 0..N {
+            tester.start_one(id, true, true).await?;
+        }
+
+        // get something to be written back to the persistent storage
+        tester.must_submit_cmd(&randu32(), N, true).await?;
+
+        for id in 0..N {
+            tester.start_one(id, true, true).await?;
+        }
+
+        // submit another one to trigger potential bug
+        tester.must_submit_cmd(&randu32(), N, true).await?;
+        tester.end().await
+    }
+    timeout_test(snapshot_init()).await;
 }
