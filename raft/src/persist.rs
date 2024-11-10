@@ -56,7 +56,8 @@ impl Persister {
 #[cfg(test)]
 impl Persister {
     pub fn raft_state_size(&self) -> usize {
-        self.storage.lock()
+        self.storage
+            .lock()
             .unwrap()
             .as_ref()
             .unwrap()

@@ -24,8 +24,7 @@ pub enum ApplyMsg {
         command: Vec<u8>
     },
     Snapshot {
-        term: usize,
-        index: usize,
+        lii: usize,
         snapshot: Vec<u8>
     }
 }

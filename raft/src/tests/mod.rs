@@ -36,7 +36,7 @@ use crate::{
 };
 use colored::Colorize;
 use labrpc::network::Network;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::{sync::Mutex, task::JoinHandle};
 
 /// In async rust, the panic does work as I expected. 
@@ -114,7 +114,17 @@ struct Node {
 struct Logs<T> {
     logs: Vec<Vec<T>>,
     apply_err: Vec<Option<PanicErr>>,
+    last_applied: Vec<Option<usize>>,
     max_cmd_idx: usize,
+}
+
+/// A snapshot contains a list of log entries and a log index 
+/// that indicates the last included log index in the snapshot.
+#[derive(Serialize, Deserialize)]
+struct Snapshot<T> {
+    // the last included log index
+    lii: usize,
+    logs: Vec<T>
 }
 
 struct Applier<T> {
@@ -141,6 +151,35 @@ impl<T> WantedCmd for T where
 {
 }
 
+impl<T> Logs<T>
+where T: WantedCmd 
+{
+    /// deserialize a snapshot, put all log entries into logs.
+    /// if lii.is_some(), the snapshot LII should be checked 
+    /// before get ingested.
+    fn ingest_snapshot(
+        &mut self,
+        id: usize,
+        snapshot: Vec<u8>,
+        lii: Option<usize>,
+    ) -> Result<()> {
+        let snap: Snapshot<T> = match bincode::deserialize_from(&snapshot[..]) {
+            Ok(s) => s,
+            Err(_) => fatal!("invalid snapshot, unable to decode it")
+        };
+
+        if lii.map_or(false, |lii| lii != snap.lii) {
+            fatal!("server {id} snapshot LAI does match the real one, expect {}", lii.unwrap());
+        }
+        
+        self.logs[id] = snap.logs;
+        self.last_applied[id] = Some(snap.lii);
+
+        Ok(())
+    }
+
+}
+
 impl<T> Tester<T>
 where
     T: WantedCmd,
@@ -153,6 +192,7 @@ where
                 logs: vec![Vec::new(); n],
                 apply_err: vec![None; n],
                 max_cmd_idx: 0,
+                last_applied: vec![None; n]
             })),
             nodes: (0..n)
                 .into_iter()
@@ -246,12 +286,12 @@ where
             self.crash_node(id).await?;
         }
 
-        // TODO: ingest_snapshot
-        // if let Some(snapshot) = self.nodes[id].persister.snapshot() {
-        //     self.ingest_snapshot(id, snapshot, None).await;
-        // }
-
         let node = &mut self.nodes[id];
+        
+        if let Some(snapshot) = node.snapshot.take() {
+            let mut logs = self.logs.lock().await;
+            logs.ingest_snapshot(id, snapshot, None)?;
+        }
 
         let client = self.net.make_client(id).await;
         let persister = node.persister.clone();
@@ -274,7 +314,6 @@ where
                 tx,
                 lai,
                 node.raft_state.take(),
-                node.snapshot.take(),
             ),
         )
         .await
@@ -648,74 +687,56 @@ where
             };
 
             let mut logs = logs.lock().await;
-            let failed = match msg {
+            let res = match msg {
                 ApplyMsg::Command { index, command } => {
                     debug!("Applier[{id}]: applied command {index}");
                     Self::check_logs(self.id, index, command, &mut logs.deref_mut())
-                        .await
-                        .is_err()
                 }
-                ApplyMsg::Snapshot { .. } if snap => false,
+                ApplyMsg::Snapshot { lii, snapshot } if snap => {
+                    logs.ingest_snapshot(self.id, snapshot, Some(lii))
+                }
                 _ => {
-                    logs.apply_err[id] = Some(panic_err!("Snapshot unexpected"));
-                    true
+                    Err(panic_err!("Snapshot unexpected"))
                 }
             };
-            if failed {
-                debug!("Applier[{id}]: failed");
+            if let Err(e) = res {
                 apply_ch.close();
+                logs.apply_err[id] = Some(e);
                 break;
-            }
-        }
-    }
-
-    async fn check_logs(
-        id: usize,
-        cmd_idx: usize,
-        cmd: Vec<u8>,
-        logs: &mut Logs<T>,
-    ) -> std::result::Result<(), ()> {
-        match Self::cross_check(id, cmd_idx, cmd, &mut logs.logs) {
-            Ok(_) => {
-                logs.max_cmd_idx = logs.max_cmd_idx.max(cmd_idx);
-                Ok(())
-            }
-            Err(msg) => {
-                logs.apply_err[id] = Some(msg);
-                Err(())
             }
         }
     }
 
     /// Check applied commands index and term consistency,
     /// if ok, insert this command into logs.
-    fn cross_check(
+    fn check_logs(
         id: usize,
         cmd_idx: usize,
         cmd: Vec<u8>,
-        logs: &mut Vec<Vec<T>>,
+        logs: &mut Logs<T>,
     ) -> Result<()> {
-        let cmd_value = bincode::deserialize_from::<_, T>(&cmd[..]).unwrap();
-
         // the command index can only be equal to the length of the
         // corresponding log list.
         // if greater, logs applied out of order;
         // if less, the log is applied before, which is not allowed
         // for a state machine.
-        if cmd_idx > logs[id].len() {
-            fatal!(
+        let lap = logs.last_applied[id];
+        use std::cmp::Ordering;
+        match lap.map(|lap| (lap+1).cmp(&cmd_idx)) {
+            Some(Ordering::Less) => fatal!(
                 "Server {id} apply out of order, expect {}, got {cmd_idx}",
-                logs[id].len()
-            );
-        } else if cmd_idx < logs[id].len() {
-            debug!("Server {id} has applied the log {cmd_idx} before, the last applied command index = {}", logs[id].len()-1);
-            fatal!("Server {id} has applied the log {cmd_idx} before.");
+                lap.unwrap() + 1
+            ),
+            Some(Ordering::Greater) => fatal!("Server {id} has applied the log {cmd_idx} before."),
+            _ => {}
         }
+
+        let cmd_value = bincode::deserialize_from::<_, T>(&cmd[..]).unwrap();
 
         // check all logs of other nodes, if the index exist in the logs
         // applied by them.
         // panics if exist two command values are inconsistent.
-        for (i, log) in logs.iter().enumerate() {
+        for (i, log) in logs.logs.iter().enumerate() {
             match log.get(cmd_idx) {
                 Some(val) if *val != cmd_value => {
                     fatal!(
@@ -727,7 +748,9 @@ where
             }
         }
 
-        logs[id].push(cmd_value);
+        logs.logs[id].push(cmd_value);
+        logs.last_applied[id] = Some(cmd_idx);
+        logs.max_cmd_idx = logs.max_cmd_idx.max(cmd_idx);
         Ok(())
     }
 }

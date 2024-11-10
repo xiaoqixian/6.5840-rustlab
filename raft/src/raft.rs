@@ -82,7 +82,6 @@ impl Raft {
         apply_ch: UbTx<ApplyMsg>,
         lai: Option<usize>,
         raft_state: Option<Vec<u8>>,
-        _snapshot: Option<Vec<u8>>,
     ) -> Self {
         let (ev_ch_tx, ev_ch_rx) = tokio::sync::mpsc::unbounded_channel();
         let ev_q = Arc::new(EvQueue::new(ev_ch_tx, me));
