@@ -37,6 +37,12 @@ pub enum Event {
     Trans(Trans),
     Kill,
 
+    TakeSnapshot {
+        index: usize,
+        snapshot: Vec<u8>,
+        reply_tx: OneTx<()>
+    },
+
     // follower related events
     HeartBeatTimeout,
 
@@ -122,6 +128,7 @@ impl std::fmt::Display for Event {
             Self::GetState(_) => write!(f, "GetState"),
             Self::Kill => write!(f, "Kill"),
             Self::StartCmd {..} => write!(f, "StartCmd"),
+            Self::TakeSnapshot {..} => write!(f, "TakeSnapshot"),
             Self::AppendEntries {..} => write!(f, "AppendEntries"),
             Self::RequestVote {..} => write!(f, "RequestVote"),
             Self::QueryEntry {..} => write!(f, "QueryEntry"),

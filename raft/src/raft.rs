@@ -187,7 +187,14 @@ impl Raft {
     ///
     /// Nothing.
     pub async fn snapshot(&self, index: usize, snapshot: Vec<u8>) {
-
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let ev = Event::TakeSnapshot {
+            index, 
+            snapshot,
+            reply_tx: tx
+        };
+        self.ev_q.just_put(ev).unwrap();
+        rx.await.unwrap()
     }
 
     /// Start a Command

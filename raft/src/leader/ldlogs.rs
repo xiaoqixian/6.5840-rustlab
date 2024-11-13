@@ -52,9 +52,11 @@ macro_rules! ld_logs_method {
 impl LdLogs {
     ld_logs_method!(write, push_cmd(term: usize, cmd: Vec<u8>) -> (usize, usize));
     ld_logs_method!(write, update_commit(lci: usize) -> Vec<(usize, Vec<u8>)>);
+    ld_logs_method!(write, take_snapshot(cmd_idx: usize, snapshot: Vec<u8>));
     ld_logs_method!(read,  up_to_date(log: &LogInfo) -> bool);
     ld_logs_method!(read, log_exist(log: &LogInfo) -> bool);
     ld_logs_method!(read, last_log_info() -> LogInfo);
+    ld_logs_method!(read, snapshot_bin() -> Option<Vec<u8>>);
 }
 
 impl serde::Serialize for LdLogs {
@@ -90,22 +92,20 @@ impl ReplLogs {
     }
 
     pub fn repl_get(&self, next_index: usize) -> Result<ReplQueryRes, ()> {
-        info!(
-            "{self}: repl_get, next_index = {next_index}, my range = {:?}",
-            self.logs_range()
-        );
-        debug_assert!(next_index >= 1);
         let logs_guard = self.logs.read().unwrap();
         let logs = match logs_guard.as_ref() {
             None => return Err(()),
             Some(l) => l,
         };
-        let (lci, lli) = (logs.lci(), logs.lli());
+        let (lci, lli, sli) = (logs.lci(), logs.lli(), logs.sli());
 
         let entry_type = if next_index > lli {
             AppendEntriesType::HeartBeat
+        } else if next_index <= sli {
+            AppendEntriesType::Snapshot(
+                logs.snapshot().unwrap().clone()
+            )
         } else {
-            // TODO: snapshot
             AppendEntriesType::Entries {
                 prev: logs.get(next_index - 1).map(LogInfo::from).unwrap(),
                 entries: logs.get_range(&(next_index..)).unwrap().to_vec(),

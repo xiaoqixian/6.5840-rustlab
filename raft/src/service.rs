@@ -5,7 +5,7 @@
 use crate::{
     candidate::VoteStatus,
     event::Event,
-    logs::{LogEntry, LogInfo},
+    logs::{LogEntry, LogInfo, Snapshot},
     raft::RaftHandle,
 };
 use serde::{Deserialize, Serialize};
@@ -24,6 +24,7 @@ pub enum AppendEntriesType {
         prev: LogInfo,
         entries: Vec<LogEntry>,
     },
+    Snapshot(Snapshot)
 }
 
 #[derive(Debug, Serialize, Deserialize)]

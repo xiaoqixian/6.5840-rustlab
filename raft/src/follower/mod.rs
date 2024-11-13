@@ -42,6 +42,12 @@ impl Follower {
 
             Event::StartCmd { reply_tx, .. } => {
                 let _ = reply_tx.send(None);
+            },
+
+            Event::TakeSnapshot { index, snapshot, reply_tx } => {
+                self.logs.take_snapshot(index, snapshot);
+                self.persist_snapshot();
+                let _ = reply_tx.send(());
             }
 
             Event::AppendEntries {args, reply_tx} => {
@@ -180,6 +186,11 @@ impl Follower {
     fn persist_state(&self) -> bool {
         let state = bincode::serialize(self).unwrap();
         self.core.persister.save(Some(state), None, false)
+    }
+
+    fn persist_snapshot(&self) -> bool {
+        let snap = self.logs.snapshot_bin();
+        self.core.persister.save(None, snap, false)
     }
 }
 

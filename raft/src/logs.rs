@@ -52,13 +52,12 @@ pub struct LogsInfo {
     logs: Vec<LogEntry>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Snapshot {
-    last_logs_idx: usize,
-    last_logs_term: usize,
-    cmd_cnt: usize,
-    last_included_cmd_idx: usize,
-    body: Vec<u8>
+    pub last_log_idx: usize,
+    pub last_log_term: usize,
+    pub last_included_cmd_idx: usize,
+    pub body: Vec<u8>
 }
 
 impl Logs {
@@ -87,22 +86,36 @@ impl Logs {
     }
 
     pub fn lli(&self) -> usize {
-        self.logs.last().unwrap().index
+        self.last_log_info().index
+    }
+
+    /// Get the first log index.
+    /// If empty, return the last log index in the snapshot.
+    pub fn sli(&self) -> usize {
+        self.snapshot
+            .as_ref()
+            .map(|snap| snap.last_log_idx)
+            .or(Some(0))
+            .unwrap()
     }
 
     pub fn last_log_info(&self) -> LogInfo {
         self.logs.last()
             .map(LogInfo::from)
-            .unwrap()
+            .or(
+                self.snapshot
+                    .as_ref()
+                    .map(|snap| LogInfo {
+                        index: snap.last_log_idx,
+                        term: snap.last_log_term
+                    })
+            )
+            .expect(&format!("{self}: logs and snapshot are both empty."))
     }
 
     /// If a log is at least as new as the last log in the list.
     pub fn up_to_date(&self, log: &LogInfo) -> bool {
         self.last_log_info() <= *log
-    }
-
-    pub fn _cmd_cnt(&self) -> usize {
-        self.cmd_cnt
     }
 
     pub fn index_term(&self, index: usize) -> Option<usize> {
@@ -253,15 +266,36 @@ impl Logs {
         self.offset..=(self.offset + len - 1)
     }
 
-    pub fn take_snapshot(&mut self, cmd_idx: usize, snapshot: Vec<u8>) {
-        let (idx, term) = self.logs.iter()
+    pub fn snapshot(&self) -> Option<&Snapshot> {
+        self.snapshot.as_ref()
+    }
+
+    pub fn take_snapshot(&mut self, cmd_idx: usize, snap: Vec<u8>) {
+        let (last_log_idx, last_log_term) = self.logs.iter()
             .find_map(|et| match et.log_type {
                 LogType::Command {index, ..} if index == cmd_idx => Some((et.index, et.term)),
                 _ => None
             })
-            .expect("Cannot find a log entry with command index = {cmd_idx}");
+            .expect(&format!("Cannot find a log entry with command \
+                    index = {cmd_idx}"));
 
+        self.snapshot = Some(Snapshot {
+            last_log_idx,
+            last_log_term,
+            last_included_cmd_idx: cmd_idx,
+            body: snap
+        });
         
+        // remove logs contained in the snapshot
+        let end = last_log_idx - self.offset;
+        self.logs.drain(..=end);
+        self.offset = last_log_idx + 1;
+    }
+
+    pub fn snapshot_bin(&self) -> Option<Vec<u8>> {
+        self.snapshot
+            .as_ref()
+            .map(|snap| bincode::serialize(snap).unwrap())
     }
 }
 impl LogInfo {
