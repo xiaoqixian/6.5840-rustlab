@@ -40,6 +40,7 @@ pub struct Logs {
     offset: usize,
     cmd_cnt: usize,
     lci: usize,
+    snapshot: Option<Snapshot>
 }
 
 /// LogsInfo contains essential information needed for Logs to recover itself.
@@ -51,12 +52,25 @@ pub struct LogsInfo {
     logs: Vec<LogEntry>,
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct Snapshot {
+    last_logs_idx: usize,
+    last_logs_term: usize,
+    cmd_cnt: usize,
+    last_included_cmd_idx: usize,
+    body: Vec<u8>
+}
+
 impl Logs {
     pub fn new(
         me: usize, 
         logs_info: LogsInfo,
+        snapshot: Option<Vec<u8>>
     ) -> Self {
         let LogsInfo { lci, logs, offset, cmd_cnt } = logs_info;
+        let snapshot: Option<Snapshot> = snapshot.map(|s| {
+            bincode::deserialize_from(&s[..]).unwrap()
+        });
 
         Self {
             me,
@@ -64,6 +78,7 @@ impl Logs {
             offset,
             cmd_cnt,
             lci,
+            snapshot
         }
     }
 
@@ -236,6 +251,17 @@ impl Logs {
     pub fn logs_range(&self) -> RangeInclusive<usize> {
         let len = self.logs.len();
         self.offset..=(self.offset + len - 1)
+    }
+
+    pub fn take_snapshot(&mut self, cmd_idx: usize, snapshot: Vec<u8>) {
+        let (idx, term) = self.logs.iter()
+            .find_map(|et| match et.log_type {
+                LogType::Command {index, ..} if index == cmd_idx => Some((et.index, et.term)),
+                _ => None
+            })
+            .expect("Cannot find a log entry with command index = {cmd_idx}");
+
+        
     }
 }
 impl LogInfo {

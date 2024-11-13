@@ -82,6 +82,7 @@ impl Raft {
         apply_ch: UbTx<ApplyMsg>,
         lai: Option<usize>,
         raft_state: Option<Vec<u8>>,
+        snapshot: Option<Vec<u8>>
     ) -> Self {
         let (ev_ch_tx, ev_ch_rx) = tokio::sync::mpsc::unbounded_channel();
         let ev_q = Arc::new(EvQueue::new(ev_ch_tx, me));
@@ -107,7 +108,7 @@ impl Raft {
 
         let handle = RaftHandle { ev_q: ev_q.clone() };
 
-        let logs = Logs::new(me, logs_info);
+        let logs = Logs::new(me, logs_info, snapshot);
 
         // apply commands that may get left before crash.
         if let Some(lai) = lai {
@@ -179,13 +180,15 @@ impl Raft {
     /// function.
     /// # Arguments
     ///
-    /// * `index` - the last log index included in the snapshot.
+    /// * `index` - the last command index included in the snapshot.
     /// * `snapshot` - the snapshot bytes.
     ///
     /// # Return
     ///
     /// Nothing.
-    pub async fn snapshot(&self, _index: usize, _snapshot: Vec<u8>) {}
+    pub async fn snapshot(&self, index: usize, snapshot: Vec<u8>) {
+
+    }
 
     /// Start a Command
     /// If the server believes it's a leader, it should return a

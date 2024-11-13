@@ -288,7 +288,7 @@ where
 
         let node = &mut self.nodes[id];
         
-        if let Some(snapshot) = node.snapshot.take() {
+        if let Some(snapshot) = node.snapshot.clone() {
             let mut logs = self.logs.lock().await;
             logs.ingest_snapshot(id, snapshot, None)?;
         }
@@ -314,6 +314,7 @@ where
                 tx,
                 lai,
                 node.raft_state.take(),
+                node.snapshot.take()
             ),
         )
         .await
