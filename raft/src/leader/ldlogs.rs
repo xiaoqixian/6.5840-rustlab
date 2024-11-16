@@ -8,7 +8,6 @@ use std::{
 };
 
 use crate::{
-    info,
     logs::{LogInfo, Logs},
     service::AppendEntriesType,
 };

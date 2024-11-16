@@ -215,7 +215,7 @@ impl Logs {
 
     /// Push a command entry to logs, return the entry index and the command index.
     pub fn push_cmd(&mut self, term: usize, cmd: Vec<u8>) -> (usize, usize) {
-        let lli = self.logs.last().unwrap().index;
+        let lli = self.lli();
         let cmd_idx = self.cmd_cnt;
         self.cmd_cnt += 1;
         self.logs.push(LogEntry {
@@ -231,7 +231,7 @@ impl Logs {
     }
 
     pub fn push_noop(&mut self, term: usize) -> usize {
-        let lli = self.logs.last().unwrap().index;
+        let lli = self.lli();
         self.logs.push(LogEntry {
             index: lli + 1,
             term,
@@ -244,7 +244,7 @@ impl Logs {
     /// update LCI, return all the command logs between the old lci 
     /// and the new lci.
     pub fn update_commit(&mut self, lci: usize) -> Vec<(usize, Vec<u8>)> {
-        if lci <= self.lci {
+        if lci <= self.lci || self.logs.is_empty() {
             return Vec::new();
         }
 
@@ -262,8 +262,7 @@ impl Logs {
     }
 
     pub fn logs_range(&self) -> RangeInclusive<usize> {
-        let len = self.logs.len();
-        self.offset..=(self.offset + len - 1)
+        self.sli()..=self.lli()
     }
 
     pub fn snapshot(&self) -> Option<&Snapshot> {
@@ -296,6 +295,13 @@ impl Logs {
         self.snapshot
             .as_ref()
             .map(|snap| bincode::serialize(snap).unwrap())
+    }
+
+    pub fn install_snapshot(&mut self, snapshot: Snapshot) {
+        self.logs.clear();
+        self.offset = snapshot.last_log_idx + 1;
+        self.cmd_cnt = snapshot.last_included_cmd_idx + 1;
+        self.snapshot = Some(snapshot);
     }
 }
 impl LogInfo {

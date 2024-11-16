@@ -132,6 +132,12 @@ impl std::fmt::Display for AppendEntriesType {
             Self::HeartBeat => write!(f, "HeartBeat"),
             Self::Entries { prev, entries } => {
                 write!(f, "AppendEntries[{prev}, {} entries]", entries.len())
+            },
+            Self::Snapshot(snap) => {
+                write!(f, "Snapshot[{}, {}, {}]", 
+                    snap.last_log_idx,
+                    snap.last_log_term,
+                    snap.last_included_cmd_idx)
             }
         }
     }
@@ -147,6 +153,12 @@ impl std::fmt::Debug for AppendEntriesType {
                     entries.first().unwrap().index,
                     entries.last().unwrap().index
                 )
+            },
+            Self::Snapshot(snap) => {
+                write!(f, "Snapshot[{}, {}, {}]", 
+                    snap.last_log_idx,
+                    snap.last_log_term,
+                    snap.last_included_cmd_idx)
             }
         }
     }

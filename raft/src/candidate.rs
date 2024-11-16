@@ -63,6 +63,7 @@ pub struct Candidate {
     voters: Vec<bool>,
     votes: usize,
     n: usize,
+    win: bool
 }
 
 impl Candidate {
@@ -247,10 +248,13 @@ impl Candidate {
             self.voters[voter] = true;
             self.votes += 1;
             debug!("{self}: accepted vote from {voter}");
-            if self.votes > self.n / 2 {
+            if !self.win && self.votes > self.n / 2 {
                 debug!("{self}: get enough votes.");
-                if let Err(_) = self.ev_q.put(TO_LEADER) {
-                    warn!("{self}: try to put TO_LEADER failed");
+                match self.ev_q.put(TO_LEADER) {
+                    Ok(_) => self.win = true,
+                    Err(_) => {
+                        warn!("{self}: try to put TO_LEADER failed");
+                    }
                 }
             }
         }
@@ -371,6 +375,7 @@ impl From<RoleCore> for Candidate {
             voters: vec![false; n],
             votes: 1,
             n,
+            win: false
         }
     }
 }

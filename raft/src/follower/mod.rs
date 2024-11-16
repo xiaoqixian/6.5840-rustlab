@@ -93,29 +93,39 @@ impl Follower {
                 self.core.term = args.term;
             }
             self.hb_timer.reset();
-            let entry_status = match args.entry_type {
-                AppendEntriesType::HeartBeat => EntryStatus::Confirmed,
-                AppendEntriesType::Entries {prev, entries} => {
-                    if let Err(entries) = self.logs.try_merge(&prev, entries) {
-                        panic!("{:?} should not be rejected", 
-                            AppendEntriesType::Entries {prev, entries});
+
+            match args.entry_type {
+                AppendEntriesType::Snapshot(snap) => {
+                    self.logs.install_snapshot(snap);
+                    if self.persist_snapshot() {
+                        let snap = self.logs.snapshot().unwrap();
+                        let _ = self.core.apply_ch.send(ApplyMsg::Snapshot {
+                            lii: snap.last_included_cmd_idx,
+                            snapshot: snap.body.clone()
+                        });
                     }
-                    EntryStatus::Confirmed
-                }
-            };
-            let apply_cmds = self.logs.update_commit(args.lci);
-            let success = self.persist_state();
+                },
+                et => {
+                    if let AppendEntriesType::Entries { prev, entries } = et {
+                        if let Err(entries) = self.logs.try_merge(&prev, entries) {
+                            panic!("{:?} should not be rejected", 
+                                AppendEntriesType::Entries {prev, entries});
+                        }
+                    }
+                    let apply_cmds = self.logs.update_commit(args.lci);
+                    let success = self.persist_state();
 
-            if !success { return }
-            
-            for (index, command) in apply_cmds.into_iter() {
-                let msg = ApplyMsg::Command { index, command };
-                if let Err(_) = self.core.apply_ch.send(msg) {
-                    break
-                }
+                    if !success { return }
+                    
+                    for (index, command) in apply_cmds.into_iter() {
+                        let msg = ApplyMsg::Command { index, command };
+                        if let Err(_) = self.core.apply_ch.send(msg) {
+                            break
+                        }
+                    }
+                },
             }
-
-            entry_status
+            EntryStatus::Confirmed
         };
         let reply = AppendEntriesReply {
             from: self.core.me,
@@ -190,7 +200,8 @@ impl Follower {
 
     fn persist_snapshot(&self) -> bool {
         let snap = self.logs.snapshot_bin();
-        self.core.persister.save(None, snap, false)
+        let state = bincode::serialize(self).unwrap();
+        self.core.persister.save(Some(state), snap, false)
     }
 }
 
