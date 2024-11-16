@@ -99,7 +99,7 @@ const SNAPSHOT_INTERVAL: usize = 10;
 struct NodeCore {
     applier_handle: JoinHandle<()>,
     applier_killed: Arc<AtomicBool>,
-    raft: Raft,
+    raft: Arc<Raft>,
 }
 
 struct Node {
@@ -129,6 +129,7 @@ struct Snapshot<T> {
 
 struct Applier<T> {
     id: usize,
+    raft: Arc<Raft>,
     logs: Arc<Mutex<Logs<T>>>,
     apply_ch: UbRx<ApplyMsg>,
     killed: Arc<AtomicBool>,
@@ -182,7 +183,7 @@ where T: WantedCmd
 
 impl<T> Tester<T>
 where
-    T: WantedCmd,
+    T: WantedCmd + Sync,
 {
     pub async fn new(n: usize, reliable: bool, snapshot: bool) -> Result<Self> {
         let mut tester = Self {
@@ -262,8 +263,17 @@ where
                 fatal!("Applier long time no return");
             }
 
-            if let Err(_) = tokio::time::timeout(Duration::from_secs(1), core.raft.kill()).await {
-                fatal!("Raft kill timeout, expect no more than 1sec");
+            debug_assert_eq!(Arc::strong_count(&core.raft), 1);
+            match Arc::try_unwrap(core.raft) {
+                Ok(raft) => {
+                    if let Err(_) = tokio::time::timeout(
+                        Duration::from_secs(1), 
+                        raft.kill()
+                    ).await {
+                        fatal!("Raft kill timeout, expect no more than 1sec");
+                    }
+                },
+                Err(_) => fatal!("Try to unwrap core.raft failed")
             }
         }
 
@@ -324,11 +334,14 @@ where
                 fatal!("Raft instantiation timeout, expect no more than 1sec");
             }
         };
+        
 
+        let raft = Arc::new(raft);
         let applier_killed = Arc::<AtomicBool>::default();
         let applier_handle = tokio::task::spawn(
             Applier {
                 id,
+                raft: raft.clone(),
                 logs: self.logs.clone(),
                 apply_ch: rx,
                 killed: applier_killed.clone(),
@@ -652,7 +665,7 @@ where
 
 impl<T> Applier<T>
 where
-    T: WantedCmd,
+    T: WantedCmd + Sync,
 {
     async fn check_alive(killed: Arc<AtomicBool>) {
         while !killed.load(Ordering::Relaxed) {
@@ -663,6 +676,7 @@ where
     async fn run(self, snap: bool) {
         let Self {
             id,
+            raft,
             killed,
             logs,
             mut apply_ch,
@@ -691,7 +705,10 @@ where
             let res = match msg {
                 ApplyMsg::Command { index, command } => {
                     debug!("Applier[{id}]: applied command {index}");
-                    Self::check_logs(self.id, index, command, &mut logs.deref_mut())
+                    match Self::check_logs(self.id, index, command, &mut logs.deref_mut()) {
+                        Ok(_) => Self::take_snapshot(&raft, &logs, index).await,
+                        Err(e) => Err(e)
+                    }
                 }
                 ApplyMsg::Snapshot { lii, snapshot } if snap => {
                     logs.ingest_snapshot(self.id, snapshot, Some(lii))
@@ -754,6 +771,21 @@ where
         logs.max_cmd_idx = logs.max_cmd_idx.max(cmd_idx);
         Ok(())
     }
+
+    async fn take_snapshot(raft: &Raft, logs: &Logs<T>, index: usize) -> Result<()> {
+        // index+1 to avoid making snapshot even when cmd_idx = 0
+        if (index + 1) % SNAPSHOT_INTERVAL != 0 {
+            return Ok(());
+        }
+        let snap_logs = &logs.logs[raft.me][0..=index];
+        let snap = bincode::serialize(snap_logs).unwrap();
+        debug!("Applier [{}]: make a snapshot in range {:?}", raft.me, 0..=index);
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            raft.snapshot(index, snap)
+        ).await
+        .map_err(|_| panic_err!("Raft {} taking snapshot timeout, expect no more than 1 sec", raft.me))
+    }
 }
 
 impl<T> std::fmt::Display for Applier<T> {
@@ -770,8 +802,19 @@ where
 {
     if !PANIC_HOOK_SET.swap(true, Ordering::Relaxed) {
         std::panic::set_hook(Box::new(|info| {
-            let msg = info.payload().downcast_ref::<String>().unwrap();
-            eprintln!("{msg}");
+            if let Some(e) = info.payload().downcast_ref::<PanicErr>() {
+                let msg = format!(
+                    "thread '{}' panicked at {}:{}\n{}",
+                    std::thread::current().name().or(Some("")).unwrap(),
+                    e.file,
+                    e.line,
+                    e.msg
+                ).red();
+                eprintln!("{msg}");
+            }
+            else {
+                eprintln!("{info}");
+            }
         }))
     }
 
@@ -784,13 +827,6 @@ where
     };
 
     if let Err(e) = r {
-        let msg = format!(
-            "thread '{}' panicked at {}:{}\n{}",
-            std::thread::current().name().or(Some("")).unwrap(),
-            e.file,
-            e.line,
-            e.msg
-        ).red();
-        panic!("{msg}");
+        std::panic::panic_any(e);
     }
 }
