@@ -46,7 +46,8 @@ impl Follower {
 
             Event::TakeSnapshot { index, snapshot, reply_tx } => {
                 self.logs.take_snapshot(index, snapshot);
-                self.persist_snapshot();
+                let b = self.persist_snapshot();
+                debug_assert!(b);
                 let _ = reply_tx.send(());
             }
 
@@ -95,13 +96,23 @@ impl Follower {
             self.hb_timer.reset();
 
             match args.entry_type {
-                AppendEntriesType::Snapshot(snap) => {
-                    self.logs.install_snapshot(snap);
+                AppendEntriesType::Snapshot {
+                    last_log_idx,
+                    last_log_term,
+                    snapshot_lii,
+                    snapshot
+                } => {
+                    self.logs.install_snapshot(
+                        last_log_idx,
+                        last_log_term,
+                        snapshot_lii,
+                        snapshot
+                    );
                     if self.persist_snapshot() {
                         let snap = self.logs.snapshot().unwrap();
                         let _ = self.core.apply_ch.send(ApplyMsg::Snapshot {
-                            lii: snap.last_included_cmd_idx,
-                            snapshot: snap.body.clone()
+                            lii: snap.0,
+                            snapshot: snap.1.clone()
                         });
                     }
                 },
@@ -199,8 +210,10 @@ impl Follower {
     }
 
     fn persist_snapshot(&self) -> bool {
-        let snap = self.logs.snapshot_bin();
+        let snap = self.logs.snapshot().map(|(_, s)| s.clone());
+        debug_assert!(snap.is_some());
         let state = bincode::serialize(self).unwrap();
+        debug!("Raft [{}]: save snapshot with lii = {}", self.core.me, self.logs.snapshot().unwrap().last_log_idx);
         self.core.persister.save(Some(state), snap, false)
     }
 }

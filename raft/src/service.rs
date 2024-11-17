@@ -5,7 +5,7 @@
 use crate::{
     candidate::VoteStatus,
     event::Event,
-    logs::{LogEntry, LogInfo, Snapshot},
+    logs::{LogEntry, LogInfo},
     raft::RaftHandle,
 };
 use serde::{Deserialize, Serialize};
@@ -24,7 +24,12 @@ pub enum AppendEntriesType {
         prev: LogInfo,
         entries: Vec<LogEntry>,
     },
-    Snapshot(Snapshot)
+    Snapshot {
+        last_log_idx: usize,
+        last_log_term: usize,
+        snapshot_lii: usize,
+        snapshot: Vec<u8>
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -133,11 +138,16 @@ impl std::fmt::Display for AppendEntriesType {
             Self::Entries { prev, entries } => {
                 write!(f, "AppendEntries[{prev}, {} entries]", entries.len())
             },
-            Self::Snapshot(snap) => {
+            Self::Snapshot {
+                last_log_idx,
+                last_log_term,
+                snapshot_lii,
+                ..
+            } => {
                 write!(f, "Snapshot[{}, {}, {}]", 
-                    snap.last_log_idx,
-                    snap.last_log_term,
-                    snap.last_included_cmd_idx)
+                    last_log_idx,
+                    last_log_term,
+                    snapshot_lii)
             }
         }
     }
@@ -154,11 +164,16 @@ impl std::fmt::Debug for AppendEntriesType {
                     entries.last().unwrap().index
                 )
             },
-            Self::Snapshot(snap) => {
+            Self::Snapshot {
+                last_log_idx,
+                last_log_term,
+                snapshot_lii,
+                ..
+            } => {
                 write!(f, "Snapshot[{}, {}, {}]", 
-                    snap.last_log_idx,
-                    snap.last_log_term,
-                    snap.last_included_cmd_idx)
+                    last_log_idx,
+                    last_log_term,
+                    snapshot_lii)
             }
         }
     }

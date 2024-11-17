@@ -84,7 +84,8 @@ impl Candidate {
 
             Event::TakeSnapshot { index, snapshot, reply_tx } => {
                 self.logs.take_snapshot(index, snapshot);
-                self.persist_snapshot();
+                let b = self.persist_snapshot();
+                debug_assert!(b);
                 let _ = reply_tx.send(());
             }
 
@@ -266,8 +267,11 @@ impl Candidate {
     }
 
     fn persist_snapshot(&self) -> bool {
-        let snap = self.logs.snapshot_bin();
-        self.core.persister.save(None, snap, false)
+        let snap = self.logs.snapshot().map(|(_, s)| s.clone());
+        debug_assert!(snap.is_some());
+        let state = bincode::serialize(self).unwrap();
+        debug!("Raft [{}]: save snapshot with lii = {}", self.core.me, self.logs.snapshot().unwrap().last_log_idx);
+        self.core.persister.save(Some(state), snap, false)
     }
 }
 

@@ -119,7 +119,7 @@ impl Replicator {
             let next_next_index = match &entry_type {
                 AppendEntriesType::HeartBeat => self.next_index,
                 AppendEntriesType::Entries { entries, .. } => entries.last().unwrap().index + 1,
-                AppendEntriesType::Snapshot(snap) => snap.last_log_idx + 1
+                AppendEntriesType::Snapshot { last_log_idx, .. } => last_log_idx + 1,
             };
 
             let args = AppendEntriesArgs {

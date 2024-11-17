@@ -40,7 +40,7 @@ pub struct Logs {
     offset: usize,
     cmd_cnt: usize,
     lci: usize,
-    snapshot: Option<Snapshot>
+    snapshot: Option<(usize, Vec<u8>)>
 }
 
 /// LogsInfo contains essential information needed for Logs to recover itself.
@@ -50,14 +50,7 @@ pub struct LogsInfo {
     lci: usize,
     cmd_cnt: usize,
     logs: Vec<LogEntry>,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub struct Snapshot {
-    pub last_log_idx: usize,
-    pub last_log_term: usize,
-    pub last_included_cmd_idx: usize,
-    pub body: Vec<u8>
+    snapshot_lii: Option<usize>
 }
 
 impl Logs {
@@ -66,10 +59,13 @@ impl Logs {
         logs_info: LogsInfo,
         snapshot: Option<Vec<u8>>
     ) -> Self {
-        let LogsInfo { lci, logs, offset, cmd_cnt } = logs_info;
-        let snapshot: Option<Snapshot> = snapshot.map(|s| {
-            bincode::deserialize_from(&s[..]).unwrap()
-        });
+        let LogsInfo { lci, logs, offset, cmd_cnt, snapshot_lii } = logs_info;
+
+        debug_assert!(
+            logs[0].index == 0 || (snapshot.is_some() && snapshot_lii.is_some()), 
+            "Logs[{me}]: logs start at {}, but the snapshot is None", 
+            logs[0].index
+        );
 
         Self {
             me,
@@ -77,7 +73,7 @@ impl Logs {
             offset,
             cmd_cnt,
             lci,
-            snapshot
+            snapshot: snapshot_lii.zip(snapshot)
         }
     }
 
@@ -89,28 +85,10 @@ impl Logs {
         self.last_log_info().index
     }
 
-    /// Get the first log index.
-    /// If empty, return the last log index in the snapshot.
-    pub fn sli(&self) -> usize {
-        self.snapshot
-            .as_ref()
-            .map(|snap| snap.last_log_idx)
-            .or(Some(0))
-            .unwrap()
-    }
-
     pub fn last_log_info(&self) -> LogInfo {
         self.logs.last()
             .map(LogInfo::from)
-            .or(
-                self.snapshot
-                    .as_ref()
-                    .map(|snap| LogInfo {
-                        index: snap.last_log_idx,
-                        term: snap.last_log_term
-                    })
-            )
-            .expect(&format!("{self}: logs and snapshot are both empty."))
+            .unwrap()
     }
 
     /// If a log is at least as new as the last log in the list.
@@ -132,21 +110,21 @@ impl Logs {
     }
 
     pub fn log_exist(&self, log_info: &LogInfo) -> bool {
-        let idx = if log_info.index < self.offset {
+        let idx = if log_info.index <= self.offset {
             return true;
         } else { log_info.index - self.offset };
-        match self.logs.get(idx) {
-            None => false,
-            Some(et) => et.term == log_info.term
-        }
+
+        self.logs
+            .get(idx)
+            .map(|et| et.term == log_info.term)
+            .or(Some(false))
+            .unwrap()
     }
 
     pub fn get(&self, index: usize) -> Option<&LogEntry> {
-        if index < self.offset {
-            None
-        } else {
-            self.logs.get(index - self.offset)
-        }
+        (index >= self.offset)
+            .then(|| self.logs.get(index - self.offset))
+            .flatten()
     }
 
     pub fn get_range<R>(&self, range: &R) -> Option<&[LogEntry]>
@@ -181,10 +159,8 @@ impl Logs {
             return Ok(());
         }
 
-        let diff = if prev.index < self.offset {
-            debug!("{self}: reject merge cause prev.index {} >= self.offset {}", prev.index, self.offset);
-            return Err(entries);
-        } else { prev.index - self.offset };
+        debug_assert!(self.lci >= self.offset);
+        let diff = prev.index - self.offset;
 
         if let None = self.logs.get(diff) {
             debug!("{self}: reject merge cause prev.index {} does not exist in logs", prev.index);
@@ -203,7 +179,7 @@ impl Logs {
         // I know this is kind of dangerous, 
         // but I don't want to use an extra block.
         self.cmd_cnt -= self.logs.drain((diff+1)..)
-        .as_ref()
+            .as_ref()
             .iter()
             .fold(0, count_cmd);
 
@@ -262,11 +238,9 @@ impl Logs {
     }
 
     pub fn logs_range(&self) -> RangeInclusive<usize> {
-        self.sli()..=self.lli()
-    }
-
-    pub fn snapshot(&self) -> Option<&Snapshot> {
-        self.snapshot.as_ref()
+        let f = self.logs.first().unwrap().index;
+        let l = self.logs.last().unwrap().index;
+        f..=l
     }
 
     pub fn take_snapshot(&mut self, cmd_idx: usize, snap: Vec<u8>) {
@@ -278,30 +252,52 @@ impl Logs {
             .expect(&format!("Cannot find a log entry with command \
                     index = {cmd_idx}"));
 
-        self.snapshot = Some(Snapshot {
-            last_log_idx,
-            last_log_term,
-            last_included_cmd_idx: cmd_idx,
-            body: snap
-        });
+        self.snapshot = Some((cmd_idx, snap));
         
         // remove logs contained in the snapshot
         let end = last_log_idx - self.offset;
-        self.logs.drain(..=end);
-        self.offset = last_log_idx + 1;
+        self.logs.drain(1..=end);
+        self.offset = last_log_idx;
+        self.logs[0] = LogEntry {
+            index: last_log_idx, 
+            term: last_log_term,
+            log_type: LogType::Noop
+        };
+
+        #[cfg(not(feature = "no_debug"))]
+        {
+            let range = match (
+                self.logs.first().map(|e| e.index),
+                self.logs.last().map(|e| e.index)
+            ) {
+                (Some(f), Some(l)) => format!("{:?}", f..=l),
+                _ => "..".to_string()
+            };
+            debug!("{self}: take a snapshot, offset = {}, logs range = {range}", self.offset);
+        }
     }
 
-    pub fn snapshot_bin(&self) -> Option<Vec<u8>> {
-        self.snapshot
-            .as_ref()
-            .map(|snap| bincode::serialize(snap).unwrap())
+    pub fn snapshot(&self) -> Option<&(usize, Vec<u8>)> {
+        self.snapshot.as_ref()
     }
 
-    pub fn install_snapshot(&mut self, snapshot: Snapshot) {
-        self.logs.clear();
-        self.offset = snapshot.last_log_idx + 1;
-        self.cmd_cnt = snapshot.last_included_cmd_idx + 1;
-        self.snapshot = Some(snapshot);
+    pub fn install_snapshot(
+        &mut self,
+        last_log_idx: usize,
+        last_log_term: usize,
+        snapshot_lii: usize,
+        snapshot: Vec<u8>,
+    ) {
+        self.logs = vec![LogEntry {
+            index: last_log_idx,
+            term: last_log_term,
+            log_type: LogType::Noop
+        }];
+        self.offset = last_log_idx;
+        self.cmd_cnt = snapshot_lii + 1;
+        self.lci = last_log_idx;
+        debug!("{self}: install a snapshot, new offset = {}, new cmd_cnt = {}", self.offset, self.cmd_cnt);
+        self.snapshot = Some((snapshot_lii, snapshot));
     }
 }
 impl LogInfo {
@@ -367,7 +363,8 @@ impl std::default::Default for LogsInfo {
             }],
             offset: 0,
             cmd_cnt: 0,
-            lci: 0
+            lci: 0,
+            snapshot_lii: None
         }
     }
 }
@@ -395,11 +392,13 @@ impl Serialize for Logs {
         where
             S: serde::Serializer {
         use serde::ser::SerializeStruct;
-        let mut s = serializer.serialize_struct("LogsInfo", 4)?;
+        let mut s = serializer.serialize_struct("LogsInfo", 5)?;
         s.serialize_field("offset", &self.offset)?;
         s.serialize_field("lci", &self.lci)?;
         s.serialize_field("cmd_cnt", &self.cmd_cnt)?;
         s.serialize_field("logs", &self.logs)?;
+        s.serialize_field("snapshot_lii", 
+            &self.snapshot.as_ref().map(|(lii, _)| *lii))?;
         s.end()
     }
 }

@@ -8,8 +8,7 @@ use std::{
 };
 
 use crate::{
-    logs::{LogInfo, Logs},
-    service::AppendEntriesType,
+    logs::{LogInfo, Logs}, service::AppendEntriesType
 };
 
 /// LdLogs is a thread-safe wrapper of Logs
@@ -55,7 +54,12 @@ impl LdLogs {
     ld_logs_method!(read,  up_to_date(log: &LogInfo) -> bool);
     ld_logs_method!(read, log_exist(log: &LogInfo) -> bool);
     ld_logs_method!(read, last_log_info() -> LogInfo);
-    ld_logs_method!(read, snapshot_bin() -> Option<Vec<u8>>);
+    
+    pub fn snapshot_body(&self) -> Option<Vec<u8>> {
+        self.logs.read().unwrap().as_ref().unwrap()
+            .snapshot()
+            .map(|(_, snap)| snap.clone())
+    }
 }
 
 impl serde::Serialize for LdLogs {
@@ -96,22 +100,32 @@ impl ReplLogs {
             None => return Err(()),
             Some(l) => l,
         };
-        let (lci, lli, sli) = (logs.lci(), logs.lli(), logs.sli());
+        
+        let logs_range = logs.logs_range();
+        let fli = *logs_range.start();
+        let lli = *logs_range.end();
 
         let entry_type = if next_index > lli {
             AppendEntriesType::HeartBeat
-        } else if next_index <= sli {
-            AppendEntriesType::Snapshot(
-                logs.snapshot().unwrap().clone()
-            )
+        } else if next_index <= fli {
+            let head = logs.get(0).unwrap();
+            let snap = logs.snapshot().unwrap();
+            AppendEntriesType::Snapshot {
+                last_log_idx: head.index,
+                last_log_term: head.term,
+                snapshot_lii: snap.0,
+                snapshot: snap.1.clone()
+            }
         } else {
             AppendEntriesType::Entries {
-                prev: logs.get(next_index - 1).map(LogInfo::from).unwrap(),
+                prev: logs.get(next_index - 1)
+                        .map(LogInfo::from)
+                        .unwrap(),
                 entries: logs.get_range(&(next_index..)).unwrap().to_vec(),
             }
         };
 
-        Ok(ReplQueryRes { lci, entry_type })
+        Ok(ReplQueryRes { lci: logs.lci(), entry_type })
     }
 }
 

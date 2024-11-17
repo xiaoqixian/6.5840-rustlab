@@ -112,29 +112,7 @@ impl Raft {
 
         // apply commands that may get left before crash.
         if let Some(lai) = lai {
-            let lai_idx = match logs.index_cmd(lai) {
-                Some(idx) => idx,
-                None => panic!("{lai} does not exist in logs, that's odd."),
-            };
-            let lci = logs.lci();
-            debug_assert!(
-                lai_idx <= lci,
-                "lai {lai_idx} should be less than lci {lci}"
-            );
-            if lai_idx < lci {
-                let apply_range = (lai_idx + 1)..=lci;
-                for (index, command) in logs
-                    .get_range(&apply_range)
-                    .unwrap()
-                    .into_iter()
-                    .cloned()
-                    .filter_map(LogEntry::into)
-                {
-                    if let Err(_) = apply_ch.send(ApplyMsg::Command { index, command }) {
-                        warn!("Apply channel should not be closed so quick");
-                    }
-                }
-            }
+            Self::apply_remain(lai, &logs, &apply_ch);
         }
 
         rpc_client
@@ -233,6 +211,41 @@ impl Raft {
                     break;
                 }
                 ev => role.process(ev).await,
+            }
+        }
+    }
+
+    fn apply_remain(lai: usize, logs: &Logs, apply_ch: &UbTx<ApplyMsg>) {
+        let (fli, lci) = {
+            let range = logs.logs_range();
+            (*range.start(), logs.lci())
+        };
+        let lai_idx = if lai < fli {
+            let snap = logs.snapshot().unwrap();
+            if let Err(_) = apply_ch.send(ApplyMsg::Snapshot {
+                lii: snap.0,
+                snapshot: snap.1.clone()
+            }) {
+                warn!("Apply channel should not be closed so quick");
+            }
+            fli
+        } else {
+            logs.index_cmd(lai)
+                .expect(&format!("{lai} does not exist in logs, that's odd."))
+        };
+
+        if lai_idx < lci {
+            let apply_range = (lai_idx + 1)..=lci;
+            for (index, command) in logs
+                .get_range(&apply_range)
+                .unwrap()
+                .into_iter()
+                .cloned()
+                .filter_map(LogEntry::into)
+            {
+                if let Err(_) = apply_ch.send(ApplyMsg::Command { index, command }) {
+                    warn!("Apply channel should not be closed so quick");
+                }
             }
         }
     }
