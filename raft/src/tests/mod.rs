@@ -20,7 +20,6 @@ use std::{
     collections::HashMap,
     fmt::{Debug, Display},
     future::Future,
-    ops::DerefMut,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -120,8 +119,13 @@ struct Logs<T> {
 
 /// A snapshot contains a list of log entries and a log index 
 /// that indicates the last included log index in the snapshot.
-#[derive(Serialize, Deserialize)]
-struct Snapshot<T> {
+#[derive(Serialize)]
+struct SnapshotSe<'a, T> {
+    lii: usize,
+    logs: &'a [T]
+}
+#[derive(Deserialize)]
+struct SnapshotDes<T> {
     // the last included log index
     lii: usize,
     logs: Vec<T>
@@ -129,6 +133,7 @@ struct Snapshot<T> {
 
 struct Applier<T> {
     id: usize,
+    snap: bool,
     raft: Arc<Raft>,
     logs: Arc<Mutex<Logs<T>>>,
     apply_ch: UbRx<ApplyMsg>,
@@ -164,9 +169,9 @@ where T: WantedCmd
         snapshot: Vec<u8>,
         lii: Option<usize>,
     ) -> Result<()> {
-        let snap: Snapshot<T> = match bincode::deserialize_from(&snapshot[..]) {
+        let snap: SnapshotDes<T> = match bincode::deserialize_from(&snapshot[..]) {
             Ok(s) => s,
-            Err(_) => fatal!("invalid snapshot, unable to decode it")
+            Err(_) => fatal!("TEST Logs[{id}]: invalid snapshot, unable to decode it")
         };
 
         if lii.map_or(false, |lii| lii != snap.lii) {
@@ -250,18 +255,20 @@ where
     async fn crash_node(&mut self, id: usize) -> Result<()> {
         let node = &mut self.nodes[id];
         if let Some(core) = node.core.take() {
-            // replace the original persister with the new created one,
-            // this operation makes the old one unavailable.
-            let (new_persister, raft_state, snapshot) = make_persister(node.persister.clone())?;
-            node.persister = new_persister;
-            node.raft_state = raft_state;
-            node.snapshot = snapshot;
-
+            // first close the apply channel, in case the node is taking 
+            // a snapshot.
             core.applier_killed.store(true, Ordering::Relaxed);
             if let Err(_) = tokio::time::timeout(Duration::from_secs(1), core.applier_handle).await
             {
                 fatal!("Applier long time no return");
             }
+
+            // then replace the original persister with the new created one,
+            // this operation makes the old one unavailable.
+            let (new_persister, raft_state, snapshot) = make_persister(node.persister.clone())?;
+            node.persister = new_persister;
+            node.raft_state = raft_state;
+            node.snapshot = snapshot;
 
             debug_assert_eq!(Arc::strong_count(&core.raft), 1);
             match Arc::try_unwrap(core.raft) {
@@ -305,14 +312,7 @@ where
 
         let client = self.net.make_client(id).await;
         let persister = node.persister.clone();
-        let lai = {
-            let len = self.logs.lock().await.logs.get(id).unwrap().len();
-            if len == 0 {
-                None
-            } else {
-                Some(len - 1)
-            }
-        };
+        let lai = self.logs.lock().await.last_applied[id].clone();
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let raft = match tokio::time::timeout(
@@ -341,12 +341,13 @@ where
         let applier_handle = tokio::task::spawn(
             Applier {
                 id,
+                snap: snapshot,
                 raft: raft.clone(),
                 logs: self.logs.clone(),
                 apply_ch: rx,
                 killed: applier_killed.clone(),
             }
-            .run(snapshot),
+            .run(),
         );
 
         node.core = Some(NodeCore {
@@ -673,54 +674,54 @@ where
         }
     }
 
-    async fn run(self, snap: bool) {
-        let Self {
-            id,
-            raft,
-            killed,
-            logs,
-            mut apply_ch,
-        } = self;
-
+    async fn run(mut self) {
         loop {
-            let msg = tokio::select! {
+            let msg = match tokio::select! {
                 biased;
-                msg = apply_ch.recv() => match msg {
-                    None => break,
-                    Some(msg) => Some(msg)
-                },
-                _ = Self::check_alive(killed.clone()) => {
-                    debug!("Applier[{id}]: no longer alive, close apply channel");
-                    apply_ch.close();
+                msg = self.apply_ch.recv() => msg,
+                _ = Self::check_alive(self.killed.clone()) => {
+                    debug!("Applier[{}]: no longer alive, close apply channel", self.id);
                     None
                 }
+            } {
+                None => break,
+                Some(msg) => msg
             };
 
-            let msg = match msg {
-                None => continue,
-                Some(msg) => msg,
-            };
-
-            let mut logs = logs.lock().await;
-            let res = match msg {
-                ApplyMsg::Command { index, command } => {
-                    debug!("Applier[{id}]: applied command {index}");
-                    match Self::check_logs(self.id, index, command, &mut logs.deref_mut()) {
-                        Ok(_) => Self::take_snapshot(&raft, &logs, index).await,
-                        Err(e) => Err(e)
-                    }
-                }
-                ApplyMsg::Snapshot { lii, snapshot } if snap => {
-                    logs.ingest_snapshot(self.id, snapshot, Some(lii))
-                }
-                _ => {
-                    Err(panic_err!("Snapshot unexpected"))
-                }
-            };
+            let mut logs = self.logs.lock().await;
+            let res = self.process(&mut logs, msg).await;
             if let Err(e) = res {
-                apply_ch.close();
-                logs.apply_err[id] = Some(e);
+                logs.apply_err[self.id] = Some(e);
                 break;
+            }
+        }
+
+        self.apply_ch.close();
+        while let Some(msg) = self.apply_ch.recv().await {
+            let mut logs = self.logs.lock().await;
+            let res = self.process(&mut logs, msg).await;
+            if let Err(e) = res {
+                logs.apply_err[self.id] = Some(e);
+                break;
+            }
+        }
+    }
+
+    async fn process(&self, logs: &mut Logs<T>, msg: ApplyMsg) -> Result<()> {
+        match msg {
+            ApplyMsg::Command { index, command } => {
+                debug!("Applier[{}]: applied command {index}", self.id);
+                match Self::check_logs(self.id, index, command, logs) {
+                    Ok(_) => Self::take_snapshot(&self.raft, &logs, index).await,
+                    Err(e) => Err(e)
+                }
+            }
+            ApplyMsg::Snapshot { lii, snapshot } if self.snap => {
+                debug!("Applier[{}]: applied snapshot with lii = {lii}", self.id);
+                logs.ingest_snapshot(self.id, snapshot, Some(lii))
+            }
+            _ => {
+                Err(panic_err!("Snapshot unexpected"))
             }
         }
     }
@@ -777,14 +778,19 @@ where
         if (index + 1) % SNAPSHOT_INTERVAL != 0 {
             return Ok(());
         }
-        let snap_logs = &logs.logs[raft.me][0..=index];
-        let snap = bincode::serialize(snap_logs).unwrap();
+
+        let snap = SnapshotSe {
+            lii: index,
+            logs: &logs.logs[raft.me][0..=index]
+        };
+        let snap_bin = bincode::serialize(&snap).unwrap();
         debug!("Applier [{}]: make a snapshot in range {:?}", raft.me, 0..=index);
         tokio::time::timeout(
             Duration::from_secs(1),
-            raft.snapshot(index, snap)
+            raft.snapshot(index, snap_bin)
         ).await
-        .map_err(|_| panic_err!("Raft {} taking snapshot timeout, expect no more than 1 sec", raft.me))
+        .map_err(|_| panic_err!("Raft {} taking snapshot timeout, \
+                expect no more than 1 sec", raft.me))
     }
 }
 

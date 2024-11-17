@@ -104,7 +104,7 @@ async fn test3d_snapshot_install() {
 }
 
 #[tokio::test]
-async fn test3d_snapshot_install_unreliable() {
+async fn test3d_snapshot_install_unreliable1() {
     let t = "Test 3D: install snapshot(disconnect + unreliable)";
     timeout_test(snap_common(t, true, false, false)).await;
 }
