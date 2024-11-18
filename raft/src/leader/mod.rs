@@ -195,7 +195,6 @@ impl Leader {
         let snap = self.logs.snapshot_body();
         debug_assert!(snap.is_some());
         let state = bincode::serialize(self).unwrap();
-        debug!("Raft [{}]: save snapshot with lii = {}", self.core.me, self.logs.snapshot().unwrap().last_log_idx);
         self.core.persister.save(Some(state), snap, false)
     }
 }

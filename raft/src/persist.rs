@@ -96,9 +96,9 @@ pub fn make_persister(
             }
         }
     };
-    let mut storage = guard.take().unwrap();
-    let raft_state = storage.raft_state.take();
-    let snapshot = storage.snapshot.take();
+    let storage = guard.take().unwrap();
+    let raft_state = storage.raft_state.clone();
+    let snapshot = storage.snapshot.clone();
     let new = Persister {
         storage: Arc::new(Mutex::new(Some(storage))),
     };

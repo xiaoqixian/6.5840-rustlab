@@ -63,8 +63,11 @@ impl Logs {
 
         debug_assert!(
             logs[0].index == 0 || (snapshot.is_some() && snapshot_lii.is_some()), 
-            "Logs[{me}]: logs start at {}, but the snapshot is None", 
-            logs[0].index
+            "Logs[{me}]: logs start at {}, but snapshot = {:?}, \
+            snapshot_lii = {:?}", 
+            logs[0].index,
+            snapshot.as_ref().map(|snap| format!("[u8; {}]", snap.len())),
+            snapshot_lii
         );
 
         Self {
@@ -273,7 +276,7 @@ impl Logs {
                 (Some(f), Some(l)) => format!("{:?}", f..=l),
                 _ => "..".to_string()
             };
-            debug!("{self}: take a snapshot, offset = {}, logs range = {range}", self.offset);
+            debug!("{self}: take a snapshot, new offset = {}, new logs range = {range}", self.offset);
         }
     }
 

@@ -60,6 +60,13 @@ impl LdLogs {
             .snapshot()
             .map(|(_, snap)| snap.clone())
     }
+
+    #[cfg(not(feature = "no_debug"))]
+    pub fn snapshot_lii(&self) -> Option<usize> {
+        self.logs.read().unwrap().as_ref().unwrap()
+            .snapshot()
+            .map(|(lii, _)| *lii)
+    }
 }
 
 impl serde::Serialize for LdLogs {
@@ -108,7 +115,7 @@ impl ReplLogs {
         let entry_type = if next_index > lli {
             AppendEntriesType::HeartBeat
         } else if next_index <= fli {
-            let head = logs.get(0).unwrap();
+            let head = logs.get(fli).unwrap();
             let snap = logs.snapshot().unwrap();
             AppendEntriesType::Snapshot {
                 last_log_idx: head.index,
