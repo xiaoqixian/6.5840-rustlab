@@ -2,13 +2,13 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
+use labrpc::client::Client;
+
 use crate::{
     persist::Persister,
-    UbTx,
-    ApplyMsg
+    ApplyMsg, UbTx,
 };
 
-use labrpc::client::Client;
 
 // The Raft object to implement a single raft node.
 pub struct Raft {}
@@ -16,79 +16,82 @@ pub struct Raft {}
 /// Raft implementation.
 /// Most API are marked as async functions, and they will called
 /// in async way. So you should not modify the asyncness of a function.
-/// If you don't need the function to async, just don't call any other 
-/// async function in the function body, they will just be like a normal 
+/// If you don't need the function to async, just don't call any other
+/// async function in the function body, they will just be like a normal
 /// function.
-/// Even though, as this lab is designed in async way. You may want to 
-/// use as much async functions as you can, so your code can run in the 
-/// best way. For example, use the async waitable lock to replace the 
+/// Even though, as this lab is designed in async way. You may want to
+/// use as much async functions as you can, so your code can run in the
+/// best way. For example, use the async waitable lock to replace the
 /// std lock.
 impl Raft {
-    /// To create a Raft server.
+    /// To create a new raft node.
     ///
-    /// You can dial any other peers with client unicast or multicast method.
+    /// If persister.raft_state().await.is_some() or
+    /// persister.snapshot().await.is_some(),
+    /// you are supposed to recover raft from the persist data.
     ///
-    /// `me` is the id of this Raft server, each Raft server owns an unique 
-    /// id.
+    /// # Arguments
     ///
-    /// `persister` is a place for this server to save its persistent state 
-    /// and also holds the most recent saved state, if any.
-    ///
-    /// `apply_ch` is a channel on which the tester or service expects Raft 
-    /// to send ApplyMsg message.
+    /// * `rpc_client` - the RPC client that can be used to add RPC services
+    /// and dial RPC requests to peers.
+    /// * `me` - the id of this raft node.
+    /// * `persister` - a persister is used to persist the state of the
+    /// raft node, so the node can recover itself from a crash and restart.
+    /// * `apply_ch` - when a command is confirmed as committed, the raft
+    /// node can apply it by sending it to the apply channel.
+    /// * `lai` - last applied command index, the Applier promises that
+    /// all commands that are sent through `apply_ch` successfully will
+    /// be applied,
+    /// * `raft_state` -
     pub async fn new(
-        _rpc_client: Client, 
-        _me: usize, 
-        _persister: Persister, 
-        _apply_ch: UbTx<ApplyMsg>
+        rpc_client: Client,
+        me: usize,
+        persister: Persister,
+        apply_ch: UbTx<ApplyMsg>,
+        lai: Option<usize>,
+        raft_state: Option<Vec<u8>>,
+        snapshot: Option<Vec<u8>>
     ) -> Self {
         Self {}
     }
 
-    /// Get the state of this server, 
-    /// return the server's term and if itself believes it's a leader.
+    /// Get the state of this raft node.
+    ///
+    /// # Retrun
+    ///
+    /// Returns the term of the raft node and if the node believes
+    /// its a leader.
     pub async fn get_state(&self) -> (usize, bool) {
-        (0, false)
+        Default::default()
     }
 
-    /// Persist essential data with persister, the data will be used 
-    /// on the next restart.
-    pub async fn persist(&self) {
-        // Your code here (3C).
-        // Example: 
-        // Create a serilizable struct Data to store necessary data
-        // let data = Data::new(self);
-        // let bytes = bincode::serilize(&data).unwrap();
-        // self.persister.save(bytes).await;
-    }
-
-    /// Read data from a byte buffer to restore Raft server state.
-    pub async fn read_persist(&mut self, _bytes: &[u8]) {
-        // read Data from bytes
-        // Example:
-        // let data: Data = bincode::deserilize_from(&bytes).unwrap();
-        // self.xxx = data.xxx;
-        // self.yyy = data.yyy;
-        // ...
-    }
-
-    /// The service says it has created a snapshot that has
-    /// all info up to and including index. this means the
-    /// service no longer needs the log through (and including)
-    /// that index. Raft should now trim its log as much as possible.
-    pub async fn snapshot(&self, _index: usize, _snapshot: Vec<u8>) {
-
-    }
+    /// In test 3D, the tester may occasionally take a snapshot,
+    /// and provide the snapshot to all raft nodes through this
+    /// function.
+    /// # Arguments
+    ///
+    /// * `index` - the last command index included in the snapshot.
+    /// * `snapshot` - the snapshot bytes.
+    ///
+    /// # Return
+    ///
+    /// Nothing.
+    pub async fn snapshot(&self, index: usize, snapshot: Vec<u8>) {}
 
     /// Start a Command
-    /// If the server believes it's a leader, it should return a 
+    /// If the server believes it's a leader, it should return a
     /// Some((A, B)), where A is the index that the command will appear
     /// at if it's ever committed, B is the current term.
     /// If it does not, it should just return None.
-    pub async fn start(&self, _command: Vec<u8>) -> Option<(usize, usize)> {
+    pub async fn start(&self, command: Vec<u8>) -> Option<(usize, usize)> {
         None
     }
 
     /// Kill the server.
+    ///
+    /// As for Test 3C, you should not persist your state only when killed.
+    /// As the tester may lock the persister, and you will fail to persist
+    /// your state.
+    /// Always persist immediatelly after essential raft state changed.
     pub async fn kill(self) {}
 }
