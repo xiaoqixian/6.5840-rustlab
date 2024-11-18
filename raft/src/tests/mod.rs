@@ -69,6 +69,16 @@ macro_rules! debug {
         }
     }
 }
+macro_rules! warn {
+    ($($args: expr),*) => {
+        #[cfg(not(feature = "no_test_debug"))]
+        {
+            let msg = format!("[CONFIG WARN] {}", format_args!($($args),*))
+                .red();
+            eprintln!("{msg}");
+        }
+    }
+}
 
 macro_rules! panic_err {
     ($($args: expr), +) => {
@@ -96,7 +106,7 @@ const TEST_TIME_LIMIT: Duration = Duration::from_secs(120);
 const SNAPSHOT_INTERVAL: usize = 10;
 
 struct NodeCore {
-    applier_handle: JoinHandle<()>,
+    applier_handle: JoinHandle<Result<()>>,
     applier_killed: Arc<AtomicBool>,
     raft: Arc<Raft>,
 }
@@ -169,6 +179,7 @@ where T: WantedCmd
         snapshot: Vec<u8>,
         lii: Option<usize>,
     ) -> Result<()> {
+        debug!("Logs [{id}]: ingest snapshot, lii = {lii:?}");
         let snap: SnapshotDes<T> = match bincode::deserialize_from(&snapshot[..]) {
             Ok(s) => s,
             Err(_) => fatal!("TEST Logs[{id}]: invalid snapshot, unable to decode it")
@@ -258,9 +269,13 @@ where
             // first close the apply channel, in case the node is taking 
             // a snapshot.
             core.applier_killed.store(true, Ordering::Relaxed);
-            if let Err(_) = tokio::time::timeout(Duration::from_secs(1), core.applier_handle).await
-            {
-                fatal!("Applier long time no return");
+            match tokio::time::timeout(
+                Duration::from_secs(1),
+                core.applier_handle
+            ).await {
+                Ok(Ok(res)) => res?,
+                Ok(Err(e)) => fatal!("Applier[{id}] join error: {e:?}"),
+                Err(_) => fatal!("Applier[{id}] long time no return")
             }
 
             // then replace the original persister with the new created one,
@@ -306,6 +321,7 @@ where
         let node = &mut self.nodes[id];
         
         if let Some(snapshot) = node.snapshot.clone() {
+            debug_assert!(node.snapshot.is_some());
             let mut logs = self.logs.lock().await;
             logs.ingest_snapshot(id, snapshot, None)?;
         }
@@ -674,7 +690,7 @@ where
         }
     }
 
-    async fn run(mut self) {
+    async fn run(mut self) -> Result<()> {
         loop {
             let msg = match tokio::select! {
                 biased;
@@ -691,8 +707,8 @@ where
             let mut logs = self.logs.lock().await;
             let res = self.process(&mut logs, msg).await;
             if let Err(e) = res {
-                logs.apply_err[self.id] = Some(e);
-                break;
+                logs.apply_err[self.id] = Some(e.clone());
+                return Err(e);
             }
         }
 
@@ -701,10 +717,12 @@ where
             let mut logs = self.logs.lock().await;
             let res = self.process(&mut logs, msg).await;
             if let Err(e) = res {
-                logs.apply_err[self.id] = Some(e);
-                break;
+                warn!("{self}: {e}");
+                logs.apply_err[self.id] = Some(e.clone());
+                return Err(e);
             }
         }
+        Ok(())
     }
 
     async fn process(&self, logs: &mut Logs<T>, msg: ApplyMsg) -> Result<()> {
@@ -712,7 +730,13 @@ where
             ApplyMsg::Command { index, command } => {
                 debug!("Applier[{}]: applied command {index}", self.id);
                 match Self::check_logs(self.id, index, command, logs) {
-                    Ok(_) => Self::take_snapshot(&self.raft, &logs, index).await,
+                    Ok(_) => {
+                        if self.snap {
+                            Self::take_snapshot(&self.raft, &logs, index).await
+                        } else {
+                            Ok(())
+                        }
+                    }
                     Err(e) => Err(e)
                 }
             }
@@ -720,7 +744,7 @@ where
                 debug!("Applier[{}]: applied snapshot with lii = {lii}", self.id);
                 logs.ingest_snapshot(self.id, snapshot, Some(lii))
             }
-            _ => {
+            ApplyMsg::Snapshot { .. } => {
                 Err(panic_err!("Snapshot unexpected"))
             }
         }
@@ -742,11 +766,20 @@ where
         let lap = logs.last_applied[id];
         use std::cmp::Ordering;
         match lap.map(|lap| (lap+1).cmp(&cmd_idx)) {
-            Some(Ordering::Less) => fatal!(
-                "Server {id} apply out of order, expect {}, got {cmd_idx}",
-                lap.unwrap() + 1
-            ),
-            Some(Ordering::Greater) => fatal!("Server {id} has applied the log {cmd_idx} before."),
+            Some(Ordering::Less) => {
+                warn!(
+                    "Server {id} apply out of order, expect {}, got {cmd_idx}",
+                    lap.unwrap() + 1
+                );
+                fatal!(
+                    "Server {id} apply out of order, expect {}, got {cmd_idx}",
+                    lap.unwrap() + 1
+                )
+            },
+            Some(Ordering::Greater) => {
+                warn!("Server {id} has applied the log {cmd_idx} before.");
+                fatal!("Server {id} has applied the log {cmd_idx} before.")
+            },
             _ => {}
         }
 
@@ -797,6 +830,12 @@ where
 impl<T> std::fmt::Display for Applier<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Applier [{}]", self.id)
+    }
+}
+
+impl std::fmt::Display for PanicErr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "PanicErr at {}:{}\n{}", self.file, self.line, self.msg)
     }
 }
 

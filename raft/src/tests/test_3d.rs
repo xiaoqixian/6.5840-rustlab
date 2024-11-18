@@ -11,6 +11,25 @@ use crate::tests::{
 use crate::fatal;
 use super::timeout_test;
 
+#[cfg(not(feature = "no_test_debug"))]
+use colored::Colorize;
+
+macro_rules! debug {
+    (no_label, $($args: expr), *) => {
+        #[cfg(not(feature = "no_test_debug"))]
+        {
+            println!($($args), *);
+        }
+    };
+    ($($args: expr),*) => {
+        #[cfg(not(feature = "no_test_debug"))]
+        {
+            let msg = format!("[TEST]: {}", format_args!($($args),*)).yellow();
+            println!("{msg}");
+        }
+    }
+}
+
 /// Test 3D: snapshot.
 
 const MAX_LOG_SIZE: usize = 2000;
@@ -44,10 +63,12 @@ where T: Display
 
         if disconnect {
             tester.disconnect(victim).await;
+            debug!("disconnect {victim}");
             tester.must_submit_cmd(&randu32(), N-1, true).await?;
         }
         if crash {
             tester.crash_one(victim).await?;
+            debug!("crash {victim}");
             tester.must_submit_cmd(&randu32(), N-1, true).await?;
         }
 
@@ -77,6 +98,7 @@ where T: Display
 
         if disconnect {
             tester.connect(victim).await;
+            debug!("reconnect {victim}");
             tester.must_submit_cmd(&randu32(), N, true).await?;
             leader1 = tester.check_one_leader().await?;
         }
@@ -84,6 +106,7 @@ where T: Display
         if crash {
             tester.start_one(victim, true, true).await?;
             tester.connect(victim).await;
+            debug!("restart and connect {victim}");
             tester.must_submit_cmd(&randu32(), N, true).await?;
             leader1 = tester.check_one_leader().await?;
         }
@@ -104,7 +127,7 @@ async fn test3d_snapshot_install() {
 }
 
 #[tokio::test]
-async fn test3d_snapshot_install_unreliable1() {
+async fn test3d_snapshot_install_unreliable() {
     let t = "Test 3D: install snapshot(disconnect + unreliable)";
     timeout_test(snap_common(t, true, false, false)).await;
 }

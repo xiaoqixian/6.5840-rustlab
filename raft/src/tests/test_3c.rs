@@ -27,7 +27,7 @@ macro_rules! debug {
     ($($args: expr),*) => {
         #[cfg(not(feature = "no_test_debug"))]
         {
-            let msg = format!("[TEST]: {}", format_args!($($args),*)).truecolor(240, 191, 79);
+            let msg = format!("[TEST]: {}", format_args!($($args),*)).yellow();
             println!("{msg}");
         }
     }
