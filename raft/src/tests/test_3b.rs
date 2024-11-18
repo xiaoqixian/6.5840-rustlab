@@ -2,13 +2,14 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use std::time::Duration;
-use tokio::sync::RwLock;
+use std::{sync::Arc, time::Duration};
 
 #[cfg(not(feature = "no_test_debug"))]
 use colored::Colorize;
+use tokio::sync::Mutex;
 
-use super::{Config, Tester, WantedCmd, ELECTION_TIMEOUT, timeout_test};
+use super::{Tester, ELECTION_TIMEOUT, timeout_test, Result};
+use crate::fatal;
 
 macro_rules! debug {
     ($($args: expr),*) => {
@@ -20,30 +21,19 @@ macro_rules! debug {
     }
 }
 
-macro_rules! fatal {
-    ($($args: expr), *) => {
-        return Err(format!($($args),*))
-    }
-}
-
-/// Directly ask a leader to submit a command, return the potential 
-/// index and term.
-/// If the "leader" is no longer a leader, it returns a None.
-async fn start_by<T>(config: &RwLock<Config<T>>, cmd: &T, leader: usize) -> Option<(usize, usize)> 
-    where T: WantedCmd
-{
-    let cmd = bincode::serialize(cmd).unwrap();
-    config.read().await.nodes.get(leader).unwrap()
-        .raft.as_ref().unwrap().start(cmd).await
-}
+// macro_rules! fatal {
+//     ($($args: expr), *) => {
+//         return Err(format!($($args),*))
+//     }
+// }
 
 #[tokio::test]
 async fn test3b_basic_agree() {
-    async fn basic_agree() -> Result<(), String> {
+    async fn basic_agree() -> Result<()> {
         const N: usize = 3;
         const RELIABLE: bool = true;
         const SNAPSHOT: bool = false;
-        let tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT).await?;
+        let mut tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT).await?;
 
         tester.begin("Test 3B: basic agreement").await;
 
@@ -52,7 +42,7 @@ async fn test3b_basic_agree() {
         for index in (base+1)..=(base+3) {
             let (nc, _) = tester.n_committed(index).await?;
             if nc > 0 {
-                return Err("Some have committed before start".to_string());
+                fatal!("Some have committed before start");
             }
 
             let xindex = tester.must_submit_cmd(&(index as u32 * 100), N, false).await?;
@@ -69,11 +59,11 @@ async fn test3b_basic_agree() {
 
 #[tokio::test]
 async fn test3b_rpc_byte() {
-    async fn rpc_byte() -> Result<(), String> {
+    async fn rpc_byte() -> Result<()> {
         const N: usize = 3;
         const RELIABLE: bool = true;
         const SNAPSHOT: bool = false;
-        let tester = Tester::<String>::new(N, RELIABLE, SNAPSHOT).await?;
+        let mut tester = Tester::<String>::new(N, RELIABLE, SNAPSHOT).await?;
 
         tester.begin("Test 3B: Rpc byte count").await;
 
@@ -100,8 +90,8 @@ async fn test3b_rpc_byte() {
         let bytes_got = byte1 - byte0;
         let byte_expected = sent * (N-1) as u64;
         if bytes_got - byte_expected > 5000 {
-            return Err(format!("Too many RPC bytes: got {bytes_got}, 
-                    expected no more than {}", byte_expected + 5000));
+            fatal!("Too many RPC bytes: got {bytes_got},\
+                    expected no more than {}", byte_expected + 5000);
         }
 
         tester.end().await?;
@@ -112,18 +102,18 @@ async fn test3b_rpc_byte() {
 
 #[tokio::test]
 async fn test3b_follower_failure() {
-    async fn follower_failure() -> Result<(), String> {
+    async fn follower_failure() -> Result<()> {
         const N: usize = 3;
         const RELIABLE: bool = true;
         const SNAPSHOT: bool = false;
-        let tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT).await?;
+        let mut tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT).await?;
         tester.begin("Test 3B: test progressive failure of followers").await;
 
         macro_rules! must_continue {
             ($prev: expr, $curr: expr) => {
                 if $curr != $prev + 1 {
-                    return Err(format!("Inconsecutive command index, 
-                            expect {}, got {}", $prev + 1, $curr));
+                    fatal!("Inconsecutive command index,\
+                            expect {}, got {}", $prev + 1, $curr);
                 }
             }
         }
@@ -158,7 +148,7 @@ async fn test3b_follower_failure() {
         mdebug!("disconnected follower {} and {}", 
             (leader2+1)%N, (leader2+2)%N);
 
-        let cmd_idx3 = match start_by(tester.config.as_ref(), &104, leader2).await {
+        let cmd_idx3 = match tester.let_it_start(leader2, &104).await {
             None => fatal!("Ask leader2 {leader2} to submit a command failed"),
             Some((i, _)) => i
         };
@@ -169,7 +159,7 @@ async fn test3b_follower_failure() {
         // cmd_idx3 should not be committed
         let (n, _) = tester.n_committed(cmd_idx3).await?;
         if n > 0 {
-            Err(format!("Command {cmd_idx3} is committed while majority of nodes are disconnected"))
+            fatal!("Command {cmd_idx3} is committed while majority of nodes are disconnected");
         } else {
             Ok(())
         }
@@ -179,11 +169,11 @@ async fn test3b_follower_failure() {
 
 #[tokio::test]
 async fn test3b_leader_failure() {
-    async fn leader_failure() -> Result<(), String> {
+    async fn leader_failure() -> Result<()> {
         const N: usize = 3;
         const RELIABLE: bool = true;
         const SNAPSHOT: bool = false;
-        let tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT).await?;
+        let mut tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT).await?;
         tester.begin("Test 3B: test failure of leaders").await;
 
         let start_index = tester.must_submit_cmd(&101, N, false).await?;
@@ -202,14 +192,11 @@ async fn test3b_leader_failure() {
         tester.disconnect(leader2).await;
 
         // submit a command to each server
+        let cmd4 = bincode::serialize(&104).unwrap();
+        for core in tester.nodes.iter()
+            .filter_map(|node| node.core.as_ref())
         {
-            let config = tester.config.read().await;
-            let cmd4 = bincode::serialize(&104).unwrap();
-            for raft in config.nodes.iter().
-                filter_map(|node| node.raft.as_ref())
-                {
-                    let _ = raft.start(cmd4.clone()).await;
-                }
+            let _ = core.raft.start(cmd4.clone()).await;
         }
 
         tokio::time::sleep(ELECTION_TIMEOUT * 2).await;
@@ -227,11 +214,11 @@ async fn test3b_leader_failure() {
 
 #[tokio::test]
 async fn test3b_fail_agree() {
-    async fn fail_agree() -> Result<(), String> {
+    async fn fail_agree() -> Result<()> {
         const N: usize = 3;
         const RELIABLE: bool = true;
         const SNAPSHOT: bool = false;
-        let tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT).await?;
+        let mut tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT).await?;
 
         tester.begin("Test 3B: agreement after follower reconnects").await;
 
@@ -265,11 +252,11 @@ async fn test3b_fail_agree() {
 /// should be committed in such a circumstance.
 #[tokio::test]
 async fn test3b_fail_no_agree() {
-    async fn fail_no_agree() -> Result<(), String> {
+    async fn fail_no_agree() -> Result<()> {
         const N: usize = 5;
         const RELIABLE: bool = true;
         const SNAPSHOT: bool = false;
-        let tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT).await?;
+        let mut tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT).await?;
         tester.begin("Test 3B: no agreement if too many followers disconnect").await;
 
         let starti = tester.must_submit_cmd(&10, N, false).await?;
@@ -285,11 +272,7 @@ async fn test3b_fail_no_agree() {
             // let the leader submit a command, the leader should refuse 
             // this request.
             let cmd_idx2 = {
-                let config = tester.config.read().await;
-                let cmd = bincode::serialize(&20).unwrap();
-                let cmd_info = config.nodes.get(leader).unwrap()
-                    .raft.as_ref().unwrap()
-                    .start(cmd).await;
+                let cmd_info = tester.let_it_start(leader, &20).await;
                 match cmd_info {
                     None => fatal!("Leader {leader} refused to start command 20"),
                     Some((cmd_idx2, _)) => {
@@ -323,11 +306,7 @@ async fn test3b_fail_no_agree() {
             // in [starti+1, starti+2].
             let leader2 = tester.check_one_leader().await?;
             debug!("leader2 = {leader2}");
-            let config = tester.config.read().await;
-            let cmd = bincode::serialize(&30).unwrap();
-            match config.nodes.get(leader2).unwrap()
-                .raft.as_ref().unwrap()
-                .start(cmd).await
+            match tester.let_it_start(leader2, &30).await
             {
                 None => fatal!("Leader2 {leader2} refused to start a command"),
                 Some((cmd_idx, _)) => {
@@ -354,11 +333,11 @@ async fn test3b_fail_no_agree() {
 /// This operation will be tried for multiple times before the tester panics.
 #[tokio::test]
 async fn test3b_concurrent_starts() {
-    async fn concurrent_starts() -> Result<(), String> {
+    async fn concurrent_starts() -> Result<()> {
         const N: usize = 3;
         const RELIABLE: bool = true;
         const SNAPSHOT: bool = false;
-        let tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT).await?;
+        let mut tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT).await?;
         tester.begin("Test 3B: concurrent start()").await;
 
         const TRIES: usize = 5;
@@ -370,18 +349,20 @@ async fn test3b_concurrent_starts() {
             ticker.tick().await;
 
             let leader = tester.check_one_leader().await?;
-            let term = match start_by(tester.config.as_ref(), &1, leader).await
+            let term = match tester.let_it_start(leader, &1).await
             {
                 None => continue 'looop,
                 Some((_, term)) => term
             };
 
             let res_set = {
+                let safe_tester = Arc::new(Mutex::new(Some(tester)));
                 let mut join_set = tokio::task::JoinSet::new();
                 for i in 0..M {
-                    let config = tester.config.clone();
+                    let tester = safe_tester.clone();
                     join_set.spawn(async move {
-                        match start_by(&config, &(100 + i), leader).await
+                        match tester.lock().await.as_mut().unwrap()
+                            .let_it_start(leader, &(100 + i)).await
                         {
                             Some((idx, tm)) if tm == term => Some(idx),
                             _ => None
@@ -389,17 +370,16 @@ async fn test3b_concurrent_starts() {
                     });
                 }
 
-                join_set.join_all().await
+                let res_set = join_set.join_all().await;
+                tester = safe_tester.lock().await.take().unwrap();
+                res_set
             };
 
-            {
-                let config = tester.config.read().await;
-                for j in 0..N {
-                    let (term_j, _) = config.nodes.get(j).unwrap()
-                        .raft.as_ref().unwrap().get_state().await;
-                    if term_j != term {
-                        continue 'looop;
-                    }
+            for i in 0..N {
+                let (term_i, _) = tester.nodes[i].core.as_ref().unwrap()
+                    .raft.get_state().await;
+                if term_i != term {
+                    continue 'looop;
                 }
             }
 
@@ -432,11 +412,11 @@ async fn test3b_concurrent_starts() {
 
 #[tokio::test]
 async fn test3b_rejoin() {
-    async fn rejoin() -> Result<(), String> {
+    async fn rejoin() -> Result<()> {
         const N: usize = 3;
         const RELIABLE: bool = true;
         const SNAPSHOT: bool = false;
-        let tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT).await?;
+        let mut tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT).await?;
 
         tester.begin("Test 3B: rejoin of partitioned leader").await;
 
@@ -453,9 +433,9 @@ async fn test3b_rejoin() {
         let leader1 = disconnect_leader!();
         debug!("disconnected leader1 {leader1}");
 
-        start_by(tester.config.as_ref(), &102, leader1).await;
-        start_by(tester.config.as_ref(), &103, leader1).await;
-        start_by(tester.config.as_ref(), &104, leader1).await;
+        tester.let_it_start(leader1, &102).await;
+        tester.let_it_start(leader1, &103).await;
+        tester.let_it_start(leader1, &104).await;
         debug!("ask leader1 started 3 commands");
 
         let _idx = tester.submit_cmd(&103, N-1, true).await?;
@@ -481,11 +461,11 @@ async fn test3b_rejoin() {
 
 #[tokio::test]
 async fn test3b_backup() {
-    async fn backup() -> Result<(), String> {
+    async fn backup() -> Result<()> {
         const N: usize = 5;
         const RELIABLE: bool = true;
         const SNAPSHOT: bool = false;
-        let tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT).await?;
+        let mut tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT).await?;
         tester.begin("Test 3B: leader backs up quickly over incorrect follower logs").await;
 
         let randu32 = rand::random::<u32>;
@@ -501,7 +481,7 @@ async fn test3b_backup() {
 
         // submit lots of commands that won't commit
         for _ in 0..50 {
-            start_by(tester.config.as_ref(), &&randu32(), leader1).await;
+            tester.let_it_start(leader1, &randu32()).await;
         }
         debug!("leader1 {leader1} submitted 50 commands!");
 
@@ -535,7 +515,7 @@ async fn test3b_backup() {
         debug!("disconnected other {other}");
 
         for _ in 0..50 {
-            start_by(tester.config.as_ref(), &&randu32(), leader2).await;
+            tester.let_it_start(leader2, &randu32()).await;
         }
         debug!("leader2 {leader2} submitted 50 commands");
 
@@ -573,11 +553,11 @@ async fn test3b_backup() {
 /// Then check how many RPCs are sent.
 #[tokio::test]
 async fn test3b_count() {
-    async fn count() -> Result<(), String> {
+    async fn count() -> Result<()> {
         const N: usize = 3;
         const RELIABLE: bool = true;
         const SNAPSHOT: bool = false;
-        let tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT).await?;
+        let mut tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT).await?;
 
         tester.begin("Test 3B: RPC counts aren't too high").await;
 
@@ -585,7 +565,6 @@ async fn test3b_count() {
 
         let mut success = false;
         let mut ticker = tokio::time::interval(Duration::from_secs(3));
-        let config = tester.config.as_ref();
         let mut total1 = 0u32;
         'looop: for _ii in 0..5 {
             ticker.tick().await;
@@ -596,7 +575,7 @@ async fn test3b_count() {
             let total0 = tester.rpc_cnt().await;
 
             // starti is the expected index of the next submitted command.
-            let (starti, term) = match start_by(config, &1, leader).await {
+            let (starti, term) = match tester.let_it_start(leader, &1).await {
                 None => continue 'looop,
                 Some((idx, term)) => (idx+1, term)
             };
@@ -611,7 +590,7 @@ async fn test3b_count() {
                 let x = rand::random::<u32>();
                 cmds.push(x);
 
-                match start_by(config, &x, leader).await {
+                match tester.let_it_start(leader, &x).await {
                     Some((x_idx, term_i)) if term == term_i => {
                         if x_idx != idx {
                             fatal!("Inconsecutive submitted command index, 
@@ -635,9 +614,9 @@ async fn test3b_count() {
                 }
             }
 
-            for raft in config.read().await.nodes.iter()
-                .filter_map(|node| node.raft.as_ref()) {
-                    let (tm, _) = raft.get_state().await;
+            for core in tester.nodes.iter()
+                .filter_map(|node| node.core.as_ref()) {
+                    let (tm, _) = core.raft.get_state().await;
                     if tm != term {
                         debug!("Found a node with different term: {tm} != {term}");
                         continue 'looop;

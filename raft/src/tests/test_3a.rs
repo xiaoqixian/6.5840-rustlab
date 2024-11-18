@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use super::{Tester, ELECTION_TIMEOUT, timeout_test};
+use super::{Tester, ELECTION_TIMEOUT, timeout_test, Result};
 
 use colored::Colorize;
 macro_rules! warn {
@@ -27,11 +27,11 @@ macro_rules! debug {
 
 #[tokio::test]
 async fn test3a_initial_election() {
-    async fn initial_election() -> Result<(), String> {
+    async fn initial_election() -> Result<()> {
         const N: usize = 3;
         const RELIABLE: bool = false;
         const SNAPSHOT: bool = false;
-        let tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT).await?;
+        let mut tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT).await?;
 
         tester.begin("Test (3A): initial election").await;
         // sleep a while to avoid racing with followers learning 
@@ -57,11 +57,11 @@ async fn test3a_initial_election() {
 
 #[tokio::test]
 async fn test3a_reelection() {
-    async fn reelction() -> Result<(), String> {
+    async fn reelction() -> Result<()> {
         const N: usize = 3;
         const RELIABLE: bool = false;
         const SNAPSHOT: bool = false;
-        let tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT).await?;
+        let mut tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT).await?;
 
         tester.begin("Test (3A): election after network failure").await;
 
@@ -94,11 +94,11 @@ async fn test3a_reelection() {
 
 #[tokio::test]
 async fn test3a_many_elections() {
-    async fn many_elections() -> Result<(), String> {
+    async fn many_elections() -> Result<()> {
         const N: usize = 7;
         const RELIABLE: bool = false;
         const SNAPSHOT: bool = false;
-        let tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT).await?;
+        let mut tester = Tester::<u32>::new(N, RELIABLE, SNAPSHOT).await?;
 
         tester.begin("Test (3A): multiple elections").await;
 
