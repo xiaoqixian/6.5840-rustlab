@@ -3,14 +3,14 @@
 // Author: https://github.com/xiaoqixian
 
 use crate::{
-    err::{Error, DISCONNECTED, TIMEOUT}, 
-    server::Server, Idx, Key, Msg, RpcReq, 
-    Service, UbTx
+    err::{Error, DISCONNECTED, TIMEOUT},
+    server::Server,
+    Idx, Key, Msg, RpcReq, Service, UbTx,
 };
 
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Serialize};
 
-/// A ClientEnd represents an end-to-end channel 
+/// A ClientEnd represents an end-to-end channel
 /// from a client to a server.
 ///
 /// @from:   the client ID
@@ -21,7 +21,7 @@ pub struct ClientEnd {
     key: Key,
     from: Idx,
     to: Idx,
-    net_tx: UbTx<Msg>
+    net_tx: UbTx<Msg>,
 }
 
 pub struct Client {
@@ -29,7 +29,7 @@ pub struct Client {
     idx: Idx,
     n: usize,
     server: Server,
-    net_tx: UbTx<Msg>
+    net_tx: UbTx<Msg>,
 }
 
 pub struct PeersIter {
@@ -41,10 +41,20 @@ pub struct PeersIter {
 }
 
 impl Client {
-    pub(crate) fn new(key: Key, idx: Idx, n: usize, 
-        server: Server, 
-        net_tx: UbTx<Msg>) -> Self {
-        Self { key, idx, n, server, net_tx }
+    pub(crate) fn new(
+        key: Key,
+        idx: Idx,
+        n: usize,
+        server: Server,
+        net_tx: UbTx<Msg>,
+    ) -> Self {
+        Self {
+            key,
+            idx,
+            n,
+            server,
+            net_tx,
+        }
     }
 
     pub fn n(&self) -> usize {
@@ -61,7 +71,7 @@ impl Client {
             idx: self.idx,
             n: self.n,
             net_tx: self.net_tx.clone(),
-            pos: 0
+            pos: 0,
         }
     }
 }
@@ -80,7 +90,7 @@ impl Iterator for PeersIter {
                 key: self.key,
                 from: self.idx,
                 to: self.pos,
-                net_tx: self.net_tx.clone()
+                net_tx: self.net_tx.clone(),
             };
             self.pos += 1;
             Some(ret)
@@ -91,23 +101,20 @@ impl Iterator for PeersIter {
 }
 
 impl ClientEnd {
-    fn gen_req<A>(meth: &str, arg: &A) -> Result<RpcReq, Error> 
-        where A: Serialize
+    fn gen_req<A>(meth: &str, arg: &A) -> Result<RpcReq, Error>
+    where
+        A: Serialize,
     {
         let (cls, method) = {
             let mut splits = meth.split('.').into_iter();
             (
-                String::from(splits.next().expect(
-                    &format!("Invalid meth: {meth}")
-                )),
-                String::from(splits.next().expect(
-                    &format!("Invalid meth: {meth}")
-                )),
+                String::from(splits.next().expect(&format!("Invalid meth: {meth}"))),
+                String::from(splits.next().expect(&format!("Invalid meth: {meth}"))),
             )
         };
         let arg = match bincode::serialize(arg) {
             Ok(arg) => arg,
-            Err(e) => panic!("Unexpected bincode serialization error {e:?}")
+            Err(e) => panic!("Unexpected bincode serialization error {e:?}"),
         };
 
         Ok(RpcReq { cls, method, arg })
@@ -117,8 +124,10 @@ impl ClientEnd {
         self.to
     }
 
-    pub async fn call<A, R>(&self, meth: &str, arg: &A) -> Result<R, Error> 
-        where A: Serialize, R: DeserializeOwned
+    pub async fn call<A, R>(&self, meth: &str, arg: &A) -> Result<R, Error>
+    where
+        A: Serialize,
+        R: DeserializeOwned,
     {
         let req = Self::gen_req(meth, arg)?;
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -127,9 +136,9 @@ impl ClientEnd {
             from: self.from,
             to: self.to,
             req,
-            reply_tx: tx
+            reply_tx: tx,
         };
-        // if the network is closed, the client end should 
+        // if the network is closed, the client end should
         // consider itself disconnected.
         if let Err(_) = self.net_tx.send(msg) {
             return Err(DISCONNECTED);
@@ -139,13 +148,10 @@ impl ClientEnd {
             Ok(res) => {
                 let res: R = bincode::deserialize(&res?[..]).unwrap();
                 Ok(res)
-            },
-            // the sender is dropped without sending, 
-            // which means the message is dropped.
-            Err(_) => {
-                Err(TIMEOUT)
             }
+            // the sender is dropped without sending,
+            // which means the message is dropped.
+            Err(_) => Err(TIMEOUT),
         }
     }
 }
-
