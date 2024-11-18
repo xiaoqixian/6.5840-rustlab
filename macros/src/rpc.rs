@@ -2,10 +2,14 @@
 // Mail:   lunar_ubuntu@qq.com
 // Author: https://github.com/xiaoqixian
 
-use std::fmt::Display;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
-use syn::{spanned::Spanned, FnArg, Generics, ImplItem, ImplItemFn, ItemImpl, Receiver, Signature, Type, Visibility};
+use std::fmt::Display;
+use syn::{
+    spanned::Spanned, FnArg, Generics, ImplItem,
+    ImplItemFn, ItemImpl, Receiver, Signature,
+    Type, Visibility,
+};
 
 fn err<T, M: Display>(span: Span, msg: M) -> Result<T, syn::Error> {
     Err(syn::Error::new(span, msg))
@@ -16,17 +20,14 @@ fn good_fn(f: &ImplItemFn) -> Result<Box<Type>, syn::Error> {
     let Signature { inputs, .. } = sig;
 
     match vis {
-        Visibility::Public(_) => {},
-        _ => return err(
-            f.span(),
-            "RPC impl functions must be public"
-        )
+        Visibility::Public(_) => {}
+        _ => return err(f.span(), "RPC impl functions must be public"),
     }
-    
+
     if inputs.len() != 2 {
         return err(
             inputs.span(),
-            "The function arguments size is expected to be 2"
+            "The function arguments size is expected to be 2",
         );
     }
 
@@ -38,24 +39,26 @@ fn good_fn(f: &ImplItemFn) -> Result<Box<Type>, syn::Error> {
             mutability: None,
             colon_token: None,
             ..
-        }) => {},
-        _ => return err(
-            receiver.span(),
-            "The first argument is expected to be &self"
-        )
+        }) => {}
+        _ => {
+            return err(
+                receiver.span(),
+                "The first argument is expected to be &self",
+            )
+        }
     }
 
     let arg = inputs.next().unwrap();
     match arg {
         FnArg::Typed(pat_type) => Ok(pat_type.ty.clone()),
-        _ => err(
-            arg.span(),
-            "Are you kidding me?"
-        )
+        _ => err(arg.span(), "Are you kidding me?"),
     }
 }
 
-pub fn rpc_impl(attr_paths: crate::attr::AttrPaths, input: ItemImpl) -> Result<TokenStream2, syn::Error> {
+pub fn rpc_impl(
+    attr_paths: crate::attr::AttrPaths,
+    input: ItemImpl,
+) -> Result<TokenStream2, syn::Error> {
     let ItemImpl {
         trait_,
         self_ty,
@@ -68,13 +71,13 @@ pub fn rpc_impl(attr_paths: crate::attr::AttrPaths, input: ItemImpl) -> Result<T
         lt_token,
         params,
         gt_token,
-        where_clause
+        where_clause,
     } = generics;
 
     let crate::attr::AttrPaths {
         trait_path,
         res_path,
-        err_path
+        err_path,
     } = attr_paths;
 
     if let Some((_, path, _)) = trait_ {
@@ -82,9 +85,8 @@ pub fn rpc_impl(attr_paths: crate::attr::AttrPaths, input: ItemImpl) -> Result<T
     }
 
     match self_ty.as_ref() {
-        Type::Path(_) => {},
-        other => return err(other.span(), 
-            "The impled type can only be a type path")
+        Type::Path(_) => {}
+        other => return err(other.span(), "The impled type can only be a type path"),
     };
     let mut var_to_call = Vec::with_capacity(impl_items.len());
 
@@ -92,7 +94,7 @@ pub fn rpc_impl(attr_paths: crate::attr::AttrPaths, input: ItemImpl) -> Result<T
         match item {
             ImplItem::Fn(f) => {
                 let arg_ty = good_fn(&f)?;
-                
+
                 let Signature {
                     ident: fn_ident,
                     asyncness,
@@ -102,7 +104,7 @@ pub fn rpc_impl(attr_paths: crate::attr::AttrPaths, input: ItemImpl) -> Result<T
                 let fn_ident_str = fn_ident.to_string();
                 let awaitness = match asyncness {
                     None => quote!(),
-                    Some(_) => quote!(.await)
+                    Some(_) => quote!(.await),
                 };
 
                 var_to_call.push(quote! {
@@ -115,11 +117,8 @@ pub fn rpc_impl(attr_paths: crate::attr::AttrPaths, input: ItemImpl) -> Result<T
                         Ok(bincode::serialize(&res).unwrap())
                     }
                 });
-            },
-            _ => return err(
-                item.span(),
-                "Only function is allowed in impl"
-            )
+            }
+            _ => return err(item.span(), "Only function is allowed in impl"),
         }
     }
 
